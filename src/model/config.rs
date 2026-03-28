@@ -136,6 +136,16 @@ fn default_load_balancing_mode() -> String {
     "priority".to_string()
 }
 
+fn is_supported_system_platform(platform: &str) -> bool {
+    matches!(platform, "darwin" | "win32" | "linux")
+}
+
+fn is_system_version_like(version: &str) -> bool {
+    !version.is_empty()
+        && version.chars().any(|c| c.is_ascii_digit())
+        && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -179,13 +189,17 @@ impl Config {
         let value = self.system_version.trim();
 
         if let Some((platform, version)) = value.split_once('#') {
-            if !platform.is_empty() && !version.is_empty() {
+            let platform = platform.trim();
+            let version = version.trim();
+            if is_supported_system_platform(platform) && is_system_version_like(version) {
                 return format!("{}#{}", platform, version);
             }
         }
 
         if let Some((platform, version)) = value.split_once('-') {
-            if !platform.is_empty() && !version.is_empty() {
+            let platform = platform.trim();
+            let version = version.trim();
+            if is_supported_system_platform(platform) && is_system_version_like(version) {
                 return format!("{}#{}", platform, version);
             }
         }
@@ -234,7 +248,8 @@ impl Config {
             .ok_or_else(|| anyhow::anyhow!("配置文件路径未知，无法保存配置"))?;
 
         let content = serde_json::to_string_pretty(self).context("序列化配置失败")?;
-        fs::write(path, content).with_context(|| format!("写入配置文件失败: {}", path.display()))?;
+        fs::write(path, content)
+            .with_context(|| format!("写入配置文件失败: {}", path.display()))?;
         Ok(())
     }
 }
