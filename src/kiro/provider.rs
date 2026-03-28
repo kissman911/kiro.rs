@@ -242,6 +242,37 @@ impl KiroProvider {
         Ok(headers)
     }
 
+    /// 发送非流式 API 请求（复用已获取的调用上下文）
+    ///
+    /// 用于需要在同一用户 turn 内固定凭据/Token 的场景。
+    pub async fn call_api_with_context(
+        &self,
+        ctx: &CallContext,
+        request_body: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.call_api_once_with_context(ctx, request_body, false).await
+    }
+
+    /// 发送流式 API 请求（复用已获取的调用上下文）
+    ///
+    /// 用于需要在同一用户 turn 内固定凭据/Token 的场景。
+    pub async fn call_api_stream_with_context(
+        &self,
+        ctx: &CallContext,
+        request_body: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.call_api_once_with_context(ctx, request_body, true).await
+    }
+
+    /// 发送 MCP API 请求（复用已获取的调用上下文）
+    pub async fn call_mcp_with_context(
+        &self,
+        ctx: &CallContext,
+        request_body: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.call_mcp_once_with_context(ctx, request_body).await
+    }
+
     /// 发送非流式 API 请求
     ///
     /// 支持多凭据故障转移：
@@ -287,6 +318,44 @@ impl KiroProvider {
     /// 返回原始的 HTTP Response
     pub async fn call_mcp(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
         self.call_mcp_with_retry(request_body).await
+    }
+
+    /// 内部方法：使用固定上下文发送单次 MCP 请求（无凭据切换）
+    async fn call_mcp_once_with_context(
+        &self,
+        ctx: &CallContext,
+        request_body: &str,
+    ) -> anyhow::Result<reqwest::Response> {
+        let url = self.mcp_url_for(&ctx.credentials);
+        let headers = self.build_mcp_headers(ctx)?;
+
+        let response = self
+            .client_for(&ctx.credentials)?
+            .post(&url)
+            .headers(headers)
+            .body(request_body.to_string())
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status.is_success() {
+            self.token_manager.report_success(ctx.id);
+            return Ok(response);
+        }
+
+        let body = response.text().await.unwrap_or_default();
+
+        if status.as_u16() == 402 && Self::is_monthly_request_limit(&body) {
+            self.token_manager.report_quota_exhausted(ctx.id);
+            anyhow::bail!("MCP 请求失败: {} {}", status, body);
+        }
+
+        if matches!(status.as_u16(), 401 | 403) {
+            self.token_manager.report_failure(ctx.id);
+            anyhow::bail!("MCP 请求失败: {} {}", status, body);
+        }
+
+        anyhow::bail!("MCP 请求失败: {} {}", status, body);
     }
 
     /// 内部方法：带重试逻辑的 MCP API 调用
@@ -438,170 +507,82 @@ impl KiroProvider {
                 }
             };
 
-            let url = self.base_url_for(&ctx.credentials);
-            let headers = match self.build_headers(&ctx) {
-                Ok(h) => h,
+            match self.call_api_once_with_context(&ctx, request_body, is_stream).await {
+                Ok(response) => return Ok(response),
                 Err(e) => {
-                    last_error = Some(e);
-                    continue;
-                }
-            };
+                    let err_str = e.to_string();
 
-            // 发送请求
-            let response = match self
-                .client_for(&ctx.credentials)?
-                .post(&url)
-                .headers(headers)
-                .body(request_body.to_string())
-                .send()
-                .await
-            {
-                Ok(resp) => resp,
-                Err(e) => {
-                    tracing::warn!(
-                        "API 请求发送失败（尝试 {}/{}）: {}",
-                        attempt + 1,
-                        max_retries,
-                        e
-                    );
-                    // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
-                    // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
-                    last_error = Some(e.into());
+                    // 400 Bad Request / 上下文窗口满 / 输入过长：直接返回
+                    if err_str.contains("400")
+                        || err_str.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+                        || err_str.contains("Input is too long")
+                    {
+                        return Err(e);
+                    }
+
+                    last_error = Some(e);
                     if attempt + 1 < max_retries {
+                        tracing::warn!(
+                            "{} API 请求失败（尝试 {}/{}），准备重试",
+                            api_type,
+                            attempt + 1,
+                            max_retries
+                        );
                         sleep(Self::retry_delay(attempt)).await;
                     }
-                    continue;
                 }
-            };
-
-            let status = response.status();
-
-            // 成功响应
-            if status.is_success() {
-                self.token_manager.report_success(ctx.id);
-                return Ok(response);
-            }
-
-            // 失败响应：读取 body 用于日志/错误信息
-            let body = response.text().await.unwrap_or_default();
-
-            // 402 Payment Required 且额度用尽：禁用凭据并故障转移
-            if status.as_u16() == 402 && Self::is_monthly_request_limit(&body) {
-                tracing::warn!(
-                    "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-
-                let has_available = self.token_manager.report_quota_exhausted(ctx.id);
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据已用尽）: {} {}",
-                        api_type,
-                        status,
-                        body
-                    );
-                }
-
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                continue;
-            }
-
-            // 400 Bad Request - 请求问题，重试/切换凭据无意义
-            if status.as_u16() == 400 {
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
-            }
-
-            // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
-            if matches!(status.as_u16(), 401 | 403) {
-                tracing::warn!(
-                    "API 请求失败（可能为凭据错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-
-                let has_available = self.token_manager.report_failure(ctx.id);
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据已用尽）: {} {}",
-                        api_type,
-                        status,
-                        body
-                    );
-                }
-
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                continue;
-            }
-
-            // 429/408/5xx - 瞬态上游错误：重试但不禁用或切换凭据
-            // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
-            if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
-                tracing::warn!(
-                    "API 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                if attempt + 1 < max_retries {
-                    sleep(Self::retry_delay(attempt)).await;
-                }
-                continue;
-            }
-
-            // 其他 4xx - 通常为请求/配置问题：直接返回，不计入凭据失败
-            if status.is_client_error() {
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
-            }
-
-            // 兜底：当作可重试的瞬态错误处理（不切换凭据）
-            tracing::warn!(
-                "API 请求失败（未知错误，尝试 {}/{}）: {} {}",
-                attempt + 1,
-                max_retries,
-                status,
-                body
-            );
-            last_error = Some(anyhow::anyhow!(
-                "{} API 请求失败: {} {}",
-                api_type,
-                status,
-                body
-            ));
-            if attempt + 1 < max_retries {
-                sleep(Self::retry_delay(attempt)).await;
             }
         }
 
-        // 所有重试都失败
         Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!(
-                "{} API 请求失败：已达到最大重试次数（{}次）",
-                api_type,
-                max_retries
-            )
+            anyhow::anyhow!("{} API 请求失败：已达到最大重试次数（{}次）", api_type, max_retries)
         }))
+    }
+
+    /// 使用固定上下文发送单次 API 请求（无凭据切换）
+    async fn call_api_once_with_context(
+        &self,
+        ctx: &CallContext,
+        request_body: &str,
+        is_stream: bool,
+    ) -> anyhow::Result<reqwest::Response> {
+        let api_type = if is_stream { "流式" } else { "非流式" };
+        let url = self.base_url_for(&ctx.credentials);
+        let headers = self.build_headers(ctx)?;
+
+        let response = self
+            .client_for(&ctx.credentials)?
+            .post(&url)
+            .headers(headers)
+            .body(request_body.to_string())
+            .send()
+            .await?;
+
+        let status = response.status();
+
+        if status.is_success() {
+            self.token_manager.report_success(ctx.id);
+            return Ok(response);
+        }
+
+        let body = response.text().await.unwrap_or_default();
+
+        if status.as_u16() == 402 && Self::is_monthly_request_limit(&body) {
+            self.token_manager.report_quota_exhausted(ctx.id);
+            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        }
+
+        if status.as_u16() == 400 {
+            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        }
+
+        if matches!(status.as_u16(), 401 | 403) {
+            self.token_manager.report_failure(ctx.id);
+            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        }
+
+        // 其他错误交给外层重试逻辑处理
+        anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
     }
 
     fn retry_delay(attempt: usize) -> Duration {

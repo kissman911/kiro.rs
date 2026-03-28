@@ -25,9 +25,11 @@
 mod converter;
 mod handlers;
 mod middleware;
+mod planner;
 mod router;
 mod stream;
 pub mod types;
 mod websearch;
 
+pub use planner::{ExecutionMode, PhaseKind, PhasePlan, RequestIdentity, RequestPlan};
 pub use router::create_router_with_provider;

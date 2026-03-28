@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
+use super::planner::{RequestIdentity, RequestPlan};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
 use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse, OutputConfig, Thinking};
 use super::websearch;
@@ -65,6 +66,56 @@ fn map_provider_error(err: Error) -> Response {
         )),
     )
         .into_response()
+}
+
+fn build_request_body_and_plan(
+    state: &AppState,
+    payload: &MessagesRequest,
+    conversion_result: super::converter::ConversionResult,
+) -> Result<(KiroRequest, RequestPlan, String), Response> {
+    let kiro_request = KiroRequest {
+        conversation_state: conversion_result.conversation_state,
+        profile_arn: state.profile_arn.clone(),
+    };
+
+    let request_plan = RequestPlan::single_phase(RequestIdentity {
+        conversation_id: kiro_request.conversation_state.conversation_id.clone(),
+        requested_model: kiro_request
+            .conversation_state
+            .current_message
+            .user_input_message
+            .model_id
+            .clone(),
+        extracted_session_id: payload
+            .metadata
+            .as_ref()
+            .and_then(|m| m.user_id.as_ref().cloned()),
+    });
+
+    tracing::debug!(
+        conversation_id = %request_plan.identity.conversation_id,
+        requested_model = %request_plan.identity.requested_model,
+        mode = ?request_plan.mode,
+        phase_count = request_plan.phases.len(),
+        "Built request plan"
+    );
+
+    let request_body = match serde_json::to_string(&kiro_request) {
+        Ok(body) => body,
+        Err(e) => {
+            tracing::error!("序列化请求失败: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    "internal_error",
+                    format!("序列化请求失败: {}", e),
+                )),
+            )
+                .into_response());
+        }
+    };
+
+    Ok((kiro_request, request_plan, request_body))
 }
 
 /// GET /v1/models
@@ -241,26 +292,11 @@ pub async fn post_messages(
         }
     };
 
-    // 构建 Kiro 请求
-    let kiro_request = KiroRequest {
-        conversation_state: conversion_result.conversation_state,
-        profile_arn: state.profile_arn.clone(),
-    };
-
-    let request_body = match serde_json::to_string(&kiro_request) {
-        Ok(body) => body,
-        Err(e) => {
-            tracing::error!("序列化请求失败: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    "internal_error",
-                    format!("序列化请求失败: {}", e),
-                )),
-            )
-                .into_response();
-        }
-    };
+    let (_kiro_request, _request_plan, request_body) =
+        match build_request_body_and_plan(&state, &payload, conversion_result) {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
 
     tracing::debug!("Kiro request body: {}", request_body);
 
@@ -724,26 +760,11 @@ pub async fn post_messages_cc(
         }
     };
 
-    // 构建 Kiro 请求
-    let kiro_request = KiroRequest {
-        conversation_state: conversion_result.conversation_state,
-        profile_arn: state.profile_arn.clone(),
-    };
-
-    let request_body = match serde_json::to_string(&kiro_request) {
-        Ok(body) => body,
-        Err(e) => {
-            tracing::error!("序列化请求失败: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    "internal_error",
-                    format!("序列化请求失败: {}", e),
-                )),
-            )
-                .into_response();
-        }
-    };
+    let (_kiro_request, _request_plan, request_body) =
+        match build_request_body_and_plan(&state, &payload, conversion_result) {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
 
     tracing::debug!("Kiro request body: {}", request_body);
 
