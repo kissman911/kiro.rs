@@ -167,6 +167,10 @@ impl TwoPhaseExecutor {
                     }
                 }
                 Err(err) => {
+                    if should_abort_on_preflight_error(&err) {
+                        tracing::warn!("preflight phase failed with credential-scoped error, aborting main phase: {}", err);
+                        return map_provider_error(err);
+                    }
                     tracing::warn!("preflight phase failed, continuing with main phase: {}", err);
                 }
             }
@@ -257,6 +261,10 @@ impl TwoPhaseExecutor {
                     }
                 }
                 Err(err) => {
+                    if should_abort_on_preflight_error(&err) {
+                        tracing::warn!("preflight phase failed with credential-scoped error, aborting main phase: {}", err);
+                        return map_provider_error(err);
+                    }
                     tracing::warn!("preflight phase failed, continuing with main phase: {}", err);
                 }
             }
@@ -345,4 +353,14 @@ fn attach_profile_arn(request_body: &str, profile_arn: Option<&str>) -> anyhow::
         serde_json::Value::String(profile_arn.to_string()),
     );
     Ok(serde_json::to_string(&json)?)
+}
+
+
+fn should_abort_on_preflight_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string();
+    msg.contains(" 401 ")
+        || msg.contains(" 403 ")
+        || msg.contains(" 402 ")
+        || msg.contains("MONTHLY_REQUEST_COUNT")
+        || msg.contains("所有凭据已用尽")
 }
