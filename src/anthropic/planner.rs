@@ -61,4 +61,29 @@ impl RequestPlan {
             }],
         }
     }
+
+    /// 原生化双阶段规划：preflight simple-task -> main model
+    pub fn two_phase_native_like(identity: RequestIdentity) -> Self {
+        let requested_model = identity.requested_model.clone();
+        Self {
+            identity,
+            mode: ExecutionMode::TwoPhaseNativeLike,
+            phases: vec![
+                PhasePlan {
+                    phase: PhaseKind::PreflightSimpleTask,
+                    model_id: "simple-task".to_string(),
+                    include_tools: false,
+                    include_tool_results: false,
+                    include_full_history: true,
+                },
+                PhasePlan {
+                    phase: PhaseKind::MainModel,
+                    model_id: requested_model,
+                    include_tools: true,
+                    include_tool_results: true,
+                    include_full_history: true,
+                },
+            ],
+        }
+    }
 }

@@ -79,7 +79,7 @@ fn build_request_body_and_plan(
         profile_arn: state.profile_arn.clone(),
     };
 
-    let request_plan = RequestPlan::single_phase(RequestIdentity {
+    let identity = RequestIdentity {
         conversation_id: kiro_request.conversation_state.conversation_id.clone(),
         requested_model: kiro_request
             .conversation_state
@@ -91,7 +91,13 @@ fn build_request_body_and_plan(
             .metadata
             .as_ref()
             .and_then(|m| m.user_id.as_ref().cloned()),
-    });
+    };
+
+    let request_plan = if state.native_like_two_phase_flow {
+        RequestPlan::two_phase_native_like(identity)
+    } else {
+        RequestPlan::single_phase(identity)
+    };
 
     tracing::debug!(
         conversation_id = %request_plan.identity.conversation_id,
@@ -347,8 +353,17 @@ pub async fn post_messages(
                 .await
         }
     } else {
-        // 非流式响应
-        handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
+        if state.native_like_two_phase_flow {
+            let executor = TwoPhaseExecutor::new(provider.clone());
+            executor
+                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+                .await
+        } else {
+            let executor = SinglePhaseExecutor::new(provider.clone());
+            executor
+                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+                .await
+        }
     }
 }
 
@@ -487,19 +502,12 @@ pub(crate) fn create_sse_stream(
 
 use super::converter::get_context_window_size;
 
-/// 处理非流式请求
-pub(crate) async fn handle_non_stream_request(
-    provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
-    request_body: &str,
+/// 将上游非流式响应解析为 Anthropic 响应
+pub(crate) async fn build_non_stream_response_from_upstream(
+    response: reqwest::Response,
     model: &str,
     input_tokens: i32,
 ) -> Response {
-    // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api(request_body).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error(e),
-    };
-
     // 读取响应体
     let body_bytes = match response.bytes().await {
         Ok(bytes) => bytes,
@@ -645,6 +653,21 @@ pub(crate) async fn handle_non_stream_request(
     });
 
     (StatusCode::OK, Json(response_body)).into_response()
+}
+
+/// 处理非流式请求
+pub(crate) async fn handle_non_stream_request(
+    provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
+    request_body: &str,
+    model: &str,
+    input_tokens: i32,
+) -> Response {
+    let response = match provider.call_api(request_body).await {
+        Ok(resp) => resp,
+        Err(e) => return map_provider_error(e),
+    };
+
+    build_non_stream_response_from_upstream(response, model, input_tokens).await
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -835,8 +858,17 @@ pub async fn post_messages_cc(
                 .await
         }
     } else {
-        // 非流式响应（复用现有逻辑，已经使用正确的 input_tokens）
-        handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
+        if state.native_like_two_phase_flow {
+            let executor = TwoPhaseExecutor::new(provider.clone());
+            executor
+                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+                .await
+        } else {
+            let executor = SinglePhaseExecutor::new(provider.clone());
+            executor
+                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+                .await
+        }
     }
 }
 
