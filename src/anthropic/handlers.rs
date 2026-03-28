@@ -76,7 +76,7 @@ fn build_request_body_and_plan(
 ) -> Result<(KiroRequest, RequestPlan, String), Response> {
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
-        profile_arn: state.profile_arn.clone(),
+        profile_arn: None,
     };
 
     let identity = RequestIdentity {

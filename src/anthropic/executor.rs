@@ -42,7 +42,15 @@ impl SinglePhaseExecutor {
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
 
-        let response = match self.provider.call_api_stream(input.request_body).await {
+        let call_ctx = match self.provider.token_manager().acquire_context(Some(input.model)).await {
+            Ok(ctx) => ctx,
+            Err(e) => return map_provider_error(e),
+        };
+        let request_body = match attach_profile_arn(input.request_body, call_ctx.credentials.profile_arn.as_deref()) {
+            Ok(body) => body,
+            Err(e) => return map_provider_error(e.into()),
+        };
+        let response = match self.provider.call_api_stream_with_context(&call_ctx, &request_body).await {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -84,7 +92,15 @@ impl SinglePhaseExecutor {
         input_tokens: i32,
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
-        let response = match self.provider.call_api(request_body).await {
+        let call_ctx = match self.provider.token_manager().acquire_context(Some(model)).await {
+            Ok(ctx) => ctx,
+            Err(e) => return map_provider_error(e),
+        };
+        let request_body = match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
+            Ok(body) => body,
+            Err(e) => return map_provider_error(e.into()),
+        };
+        let response = match self.provider.call_api_with_context(&call_ctx, &request_body).await {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -125,7 +141,14 @@ impl TwoPhaseExecutor {
             Err(e) => return map_provider_error(e),
         };
 
-        if let Ok(preflight_body) = build_preflight_request_body(input.request_body, plan) {
+        let main_request_body = match attach_profile_arn(input.request_body, call_ctx.credentials.profile_arn.as_deref()) {
+            Ok(body) => body,
+            Err(e) => return map_provider_error(e.into()),
+        };
+
+        if let Ok(preflight_body_raw) = build_preflight_request_body(input.request_body, plan) {
+            let preflight_body = attach_profile_arn(&preflight_body_raw, call_ctx.credentials.profile_arn.as_deref())
+                .unwrap_or(preflight_body_raw);
             tracing::debug!(
                 conversation_id = %plan.identity.conversation_id,
                 credential_id = call_ctx.id,
@@ -151,7 +174,7 @@ impl TwoPhaseExecutor {
 
         let response = match self
             .provider
-            .call_api_stream_with_context(&call_ctx, input.request_body)
+            .call_api_stream_with_context(&call_ctx, &main_request_body)
             .await
         {
             Ok(resp) => resp,
@@ -212,7 +235,14 @@ impl TwoPhaseExecutor {
             Err(e) => return map_provider_error(e),
         };
 
-        if let Ok(preflight_body) = build_preflight_request_body(request_body, plan) {
+        let main_request_body = match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
+            Ok(body) => body,
+            Err(e) => return map_provider_error(e.into()),
+        };
+
+        if let Ok(preflight_body_raw) = build_preflight_request_body(request_body, plan) {
+            let preflight_body = attach_profile_arn(&preflight_body_raw, call_ctx.credentials.profile_arn.as_deref())
+                .unwrap_or(preflight_body_raw);
             tracing::debug!(
                 conversation_id = %plan.identity.conversation_id,
                 credential_id = call_ctx.id,
@@ -232,7 +262,7 @@ impl TwoPhaseExecutor {
             }
         }
 
-        let response = match self.provider.call_api_with_context(&call_ctx, request_body).await {
+        let response = match self.provider.call_api_with_context(&call_ctx, &main_request_body).await {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -297,5 +327,22 @@ fn build_preflight_request_body(request_body: &str, plan: &RequestPlan) -> anyho
         }
     }
 
+    Ok(serde_json::to_string(&json)?)
+}
+
+
+fn attach_profile_arn(request_body: &str, profile_arn: Option<&str>) -> anyhow::Result<String> {
+    let Some(profile_arn) = profile_arn else {
+        return Ok(request_body.to_string());
+    };
+
+    let mut json: serde_json::Value = serde_json::from_str(request_body)?;
+    let obj = json
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("request body is not a JSON object"))?;
+    obj.insert(
+        "profileArn".to_string(),
+        serde_json::Value::String(profile_arn.to_string()),
+    );
     Ok(serde_json::to_string(&json)?)
 }
