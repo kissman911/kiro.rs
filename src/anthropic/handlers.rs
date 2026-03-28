@@ -22,6 +22,7 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
+use super::executor::{SinglePhaseExecutor, StreamExecutionInput, StreamMode};
 use super::middleware::AppState;
 use super::planner::{RequestIdentity, RequestPlan};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
@@ -29,7 +30,7 @@ use super::types::{CountTokensRequest, CountTokensResponse, ErrorResponse, Messa
 use super::websearch;
 
 /// 将 KiroProvider 错误映射为 HTTP 响应
-fn map_provider_error(err: Error) -> Response {
+pub(crate) fn map_provider_error(err: Error) -> Response {
     let err_str = err.to_string();
 
     // 上下文窗口满了（对话历史累积超出模型上下文窗口限制）
@@ -316,15 +317,19 @@ pub async fn post_messages(
         .unwrap_or(false);
 
     if payload.stream {
-        // 流式响应
-        handle_stream_request(
-            provider,
-            &request_body,
-            &payload.model,
-            input_tokens,
-            thinking_enabled,
-        )
-        .await
+        let executor = SinglePhaseExecutor::new(provider.clone());
+        executor
+            .execute_stream(
+                &_request_plan,
+                StreamExecutionInput {
+                    request_body: &request_body,
+                    model: &payload.model,
+                    input_tokens,
+                    thinking_enabled,
+                    stream_mode: StreamMode::Direct,
+                },
+            )
+            .await
     } else {
         // 非流式响应
         handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
@@ -373,7 +378,7 @@ fn create_ping_sse() -> Bytes {
 }
 
 /// 创建 SSE 事件流
-fn create_sse_stream(
+pub(crate) fn create_sse_stream(
     response: reqwest::Response,
     ctx: StreamContext,
     initial_events: Vec<SseEvent>,
@@ -467,7 +472,7 @@ fn create_sse_stream(
 use super::converter::get_context_window_size;
 
 /// 处理非流式请求
-async fn handle_non_stream_request(
+pub(crate) async fn handle_non_stream_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     request_body: &str,
     model: &str,
@@ -784,15 +789,19 @@ pub async fn post_messages_cc(
         .unwrap_or(false);
 
     if payload.stream {
-        // 流式响应（缓冲模式）
-        handle_stream_request_buffered(
-            provider,
-            &request_body,
-            &payload.model,
-            input_tokens,
-            thinking_enabled,
-        )
-        .await
+        let executor = SinglePhaseExecutor::new(provider.clone());
+        executor
+            .execute_stream(
+                &_request_plan,
+                StreamExecutionInput {
+                    request_body: &request_body,
+                    model: &payload.model,
+                    input_tokens,
+                    thinking_enabled,
+                    stream_mode: StreamMode::Buffered,
+                },
+            )
+            .await
     } else {
         // 非流式响应（复用现有逻辑，已经使用正确的 input_tokens）
         handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
@@ -839,7 +848,7 @@ async fn handle_stream_request_buffered(
 /// 2. 使用 StreamContext 的事件处理逻辑处理所有 Kiro 事件，结果缓存
 /// 3. 流结束后，用正确的 input_tokens 更正 message_start 事件
 /// 4. 一次性发送所有事件
-fn create_buffered_sse_stream(
+pub(crate) fn create_buffered_sse_stream(
     response: reqwest::Response,
     ctx: BufferedStreamContext,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
