@@ -120,6 +120,111 @@ pub struct ConversionResult {
     pub conversation_state: ConversationState,
 }
 
+pub struct RequestIdentityData {
+    pub conversation_id: String,
+    pub agent_continuation_id: String,
+    pub chat_trigger_type: String,
+}
+
+pub struct CurrentMessageData {
+    pub text_content: String,
+    pub images: Vec<KiroImage>,
+    pub tool_results: Vec<ToolResult>,
+}
+
+fn validate_and_trim_messages<'a>(req: &'a MessagesRequest) -> Result<&'a [super::types::Message], ConversionError> {
+    if req.messages.is_empty() {
+        return Err(ConversionError::EmptyMessages);
+    }
+
+    if req.messages.last().is_some_and(|m| m.role != "user") {
+        tracing::info!("检测到末尾 assistant 消息（prefill），静默丢弃");
+        let last_user_idx = req
+            .messages
+            .iter()
+            .rposition(|m| m.role == "user")
+            .ok_or(ConversionError::EmptyMessages)?;
+        Ok(&req.messages[..=last_user_idx])
+    } else {
+        Ok(&req.messages)
+    }
+}
+
+fn build_request_identity(req: &MessagesRequest) -> RequestIdentityData {
+    let extracted_session_id = req
+        .metadata
+        .as_ref()
+        .and_then(|m| m.user_id.as_ref())
+        .and_then(|user_id| extract_session_id(user_id));
+
+    let conversation_id = extracted_session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let agent_continuation_id = Uuid::new_v4().to_string();
+    let chat_trigger_type = determine_chat_trigger_type(req);
+
+    RequestIdentityData {
+        conversation_id,
+        agent_continuation_id,
+        chat_trigger_type,
+    }
+}
+
+fn build_current_message_data(last_message: &super::types::Message) -> Result<CurrentMessageData, ConversionError> {
+    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
+    Ok(CurrentMessageData {
+        text_content,
+        images,
+        tool_results,
+    })
+}
+
+fn enrich_tools_from_history(mut tools: Vec<Tool>, history: &[Message]) -> Vec<Tool> {
+    let history_tool_names = collect_history_tool_names(history);
+    let existing_tool_names: std::collections::HashSet<_> = tools
+        .iter()
+        .map(|t| t.tool_specification.name.to_lowercase())
+        .collect();
+
+    for tool_name in history_tool_names {
+        if !existing_tool_names.contains(&tool_name.to_lowercase()) {
+            tools.push(create_placeholder_tool(&tool_name));
+        }
+    }
+
+    tools
+}
+
+fn build_user_input_context(tools: Vec<Tool>, tool_results: Vec<ToolResult>) -> UserInputMessageContext {
+    let mut context = UserInputMessageContext::new();
+    if !tools.is_empty() {
+        context = context.with_tools(tools);
+    }
+    if !tool_results.is_empty() {
+        context = context.with_tool_results(tool_results);
+    }
+    context
+}
+
+fn build_current_message(model_id: &str, current: CurrentMessageData, context: UserInputMessageContext) -> CurrentMessage {
+    let mut user_input = UserInputMessage::new(current.text_content, model_id)
+        .with_context(context)
+        .with_origin("AI_EDITOR");
+
+    if !current.images.is_empty() {
+        user_input = user_input.with_images(current.images);
+    }
+
+    CurrentMessage::new(user_input)
+}
+
+fn build_conversation_state(identity: RequestIdentityData, current_message: CurrentMessage, history: Vec<Message>) -> ConversationState {
+    ConversationState::new(identity.conversation_id)
+        .with_agent_continuation_id(identity.agent_continuation_id)
+        .with_agent_task_type("vibe")
+        .with_chat_trigger_type(identity.chat_trigger_type)
+        .with_current_message(current_message)
+        .with_history(history)
+}
+
 /// 转换错误
 #[derive(Debug)]
 pub enum ConversionError {
@@ -198,106 +303,24 @@ fn create_placeholder_tool(name: &str) -> Tool {
 
 /// 将 Anthropic 请求转换为 Kiro 请求
 pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, ConversionError> {
-    // 1. 映射模型
     let model_id = map_model(&req.model)
         .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
 
-    // 2. 检查消息列表
-    if req.messages.is_empty() {
-        return Err(ConversionError::EmptyMessages);
-    }
+    let messages = validate_and_trim_messages(req)?;
+    let identity = build_request_identity(req);
+    let current = build_current_message_data(messages.last().unwrap())?;
 
-    // 2.5. 预处理 prefill：如果末尾是 assistant，静默丢弃并截断到最后一条 user
-    // Claude 4.x 已弃用 assistant prefill，Kiro API 也不支持
-    let messages: &[_] = if req.messages.last().is_some_and(|m| m.role != "user") {
-        tracing::info!("检测到末尾 assistant 消息（prefill），静默丢弃");
-        let last_user_idx = req
-            .messages
-            .iter()
-            .rposition(|m| m.role == "user")
-            .ok_or(ConversionError::EmptyMessages)?;
-        &req.messages[..=last_user_idx]
-    } else {
-        &req.messages
-    };
-
-    // 3. 生成会话 ID 和代理 ID
-    // 优先从 metadata.user_id 中提取 session UUID 作为 conversationId
-    let conversation_id = req
-        .metadata
-        .as_ref()
-        .and_then(|m| m.user_id.as_ref())
-        .and_then(|user_id| extract_session_id(user_id))
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let agent_continuation_id = Uuid::new_v4().to_string();
-
-    // 4. 确定触发类型
-    let chat_trigger_type = determine_chat_trigger_type(req);
-
-    // 5. 处理最后一条消息作为 current_message（经过 prefill 预处理，末尾必为 user）
-    let last_message = messages.last().unwrap();
-    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
-
-    // 6. 转换工具定义
-    let mut tools = convert_tools(&req.tools);
-
-    // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
     let mut history = build_history(req, messages, &model_id)?;
+    let tools = convert_tools(&req.tools);
 
-    // 8. 验证并过滤 tool_use/tool_result 配对
-    // 移除孤立的 tool_result（没有对应的 tool_use）
-    // 同时返回孤立的 tool_use_id 集合，用于后续清理
     let (validated_tool_results, orphaned_tool_use_ids) =
-        validate_tool_pairing(&history, &tool_results);
-
-    // 9. 从历史中移除孤立的 tool_use（Kiro API 要求 tool_use 必须有对应的 tool_result）
+        validate_tool_pairing(&history, &current.tool_results);
     remove_orphaned_tool_uses(&mut history, &orphaned_tool_use_ids);
 
-    // 10. 收集历史中使用的工具名称，为缺失的工具生成占位符定义
-    // Kiro API 要求：历史消息中引用的工具必须在 tools 列表中有定义
-    // 注意：Kiro 匹配工具名称时忽略大小写，所以这里也需要忽略大小写比较
-    let history_tool_names = collect_history_tool_names(&history);
-    let existing_tool_names: std::collections::HashSet<_> = tools
-        .iter()
-        .map(|t| t.tool_specification.name.to_lowercase())
-        .collect();
-
-    for tool_name in history_tool_names {
-        if !existing_tool_names.contains(&tool_name.to_lowercase()) {
-            tools.push(create_placeholder_tool(&tool_name));
-        }
-    }
-
-    // 11. 构建 UserInputMessageContext
-    let mut context = UserInputMessageContext::new();
-    if !tools.is_empty() {
-        context = context.with_tools(tools);
-    }
-    if !validated_tool_results.is_empty() {
-        context = context.with_tool_results(validated_tool_results);
-    }
-
-    // 12. 构建当前消息
-    // 保留文本内容，即使有工具结果也不丢弃用户文本
-    let content = text_content;
-
-    let mut user_input = UserInputMessage::new(content, &model_id)
-        .with_context(context)
-        .with_origin("AI_EDITOR");
-
-    if !images.is_empty() {
-        user_input = user_input.with_images(images);
-    }
-
-    let current_message = CurrentMessage::new(user_input);
-
-    // 13. 构建 ConversationState
-    let conversation_state = ConversationState::new(conversation_id)
-        .with_agent_continuation_id(agent_continuation_id)
-        .with_agent_task_type("vibe")
-        .with_chat_trigger_type(chat_trigger_type)
-        .with_current_message(current_message)
-        .with_history(history);
+    let enriched_tools = enrich_tools_from_history(tools, &history);
+    let context = build_user_input_context(enriched_tools, validated_tool_results);
+    let current_message = build_current_message(&model_id, current, context);
+    let conversation_state = build_conversation_state(identity, current_message, history);
 
     Ok(ConversionResult { conversation_state })
 }
