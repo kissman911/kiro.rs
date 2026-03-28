@@ -22,7 +22,7 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use super::converter::{ConversionError, convert_request};
-use super::executor::{SinglePhaseExecutor, StreamExecutionInput, StreamMode};
+use super::executor::{SinglePhaseExecutor, StreamExecutionInput, StreamMode, TwoPhaseExecutor};
 use super::middleware::AppState;
 use super::planner::{RequestIdentity, RequestPlan};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext};
@@ -317,19 +317,35 @@ pub async fn post_messages(
         .unwrap_or(false);
 
     if payload.stream {
-        let executor = SinglePhaseExecutor::new(provider.clone());
-        executor
-            .execute_stream(
-                &_request_plan,
-                StreamExecutionInput {
-                    request_body: &request_body,
-                    model: &payload.model,
-                    input_tokens,
-                    thinking_enabled,
-                    stream_mode: StreamMode::Direct,
-                },
-            )
-            .await
+        if state.native_like_two_phase_flow {
+            let executor = TwoPhaseExecutor::new(provider.clone());
+            executor
+                .execute_stream(
+                    &_request_plan,
+                    StreamExecutionInput {
+                        request_body: &request_body,
+                        model: &payload.model,
+                        input_tokens,
+                        thinking_enabled,
+                        stream_mode: StreamMode::Direct,
+                    },
+                )
+                .await
+        } else {
+            let executor = SinglePhaseExecutor::new(provider.clone());
+            executor
+                .execute_stream(
+                    &_request_plan,
+                    StreamExecutionInput {
+                        request_body: &request_body,
+                        model: &payload.model,
+                        input_tokens,
+                        thinking_enabled,
+                        stream_mode: StreamMode::Direct,
+                    },
+                )
+                .await
+        }
     } else {
         // 非流式响应
         handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await
@@ -789,19 +805,35 @@ pub async fn post_messages_cc(
         .unwrap_or(false);
 
     if payload.stream {
-        let executor = SinglePhaseExecutor::new(provider.clone());
-        executor
-            .execute_stream(
-                &_request_plan,
-                StreamExecutionInput {
-                    request_body: &request_body,
-                    model: &payload.model,
-                    input_tokens,
-                    thinking_enabled,
-                    stream_mode: StreamMode::Buffered,
-                },
-            )
-            .await
+        if state.native_like_two_phase_flow {
+            let executor = TwoPhaseExecutor::new(provider.clone());
+            executor
+                .execute_stream(
+                    &_request_plan,
+                    StreamExecutionInput {
+                        request_body: &request_body,
+                        model: &payload.model,
+                        input_tokens,
+                        thinking_enabled,
+                        stream_mode: StreamMode::Buffered,
+                    },
+                )
+                .await
+        } else {
+            let executor = SinglePhaseExecutor::new(provider.clone());
+            executor
+                .execute_stream(
+                    &_request_plan,
+                    StreamExecutionInput {
+                        request_body: &request_body,
+                        model: &payload.model,
+                        input_tokens,
+                        thinking_enabled,
+                        stream_mode: StreamMode::Buffered,
+                    },
+                )
+                .await
+        }
     } else {
         // 非流式响应（复用现有逻辑，已经使用正确的 input_tokens）
         handle_non_stream_request(provider, &request_body, &payload.model, input_tokens).await

@@ -90,6 +90,10 @@ pub struct Config {
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
 
+    /// 是否启用原生化双阶段执行模式（实验）
+    #[serde(default)]
+    pub native_like_two_phase_flow: bool,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -154,6 +158,7 @@ impl Default for Config {
             proxy_password: None,
             admin_api_key: None,
             load_balancing_mode: default_load_balancing_mode(),
+            native_like_two_phase_flow: false,
             config_path: None,
         }
     }
