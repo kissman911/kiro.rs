@@ -342,10 +342,15 @@ pub(crate) async fn get_usage_limits(
         url.push_str(&format!("&profileArn={}", urlencoding::encode(profile_arn)));
     }
 
-    // 构建 User-Agent headers
+    // 构建 User-Agent headers（使用 config 中的 systemVersion 和 nodeVersion 保持指纹一致性）
+    let os_name = &config.system_version;
+    let node_version = &config.node_version;
     let user_agent = format!(
-        "aws-sdk-js/1.0.0 ua/2.1 os/darwin#24.6.0 lang/js md/nodejs#22.21.1 \
+        "aws-sdk-js/1.0.0 ua/2.1 os/{}#{} lang/js md/nodejs#{} \
          api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+        os_name.split('-').next().unwrap_or("darwin"),
+        os_name.split('-').nth(1).unwrap_or("25.1.0"),
+        node_version,
         kiro_version, machine_id
     );
     let amz_user_agent = format!(
