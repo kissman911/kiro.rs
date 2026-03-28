@@ -170,6 +170,29 @@ impl Config {
         "config.json"
     }
 
+    /// 规范化 systemVersion 为 Kiro User-Agent 使用的 `platform#version` 形式。
+    ///
+    /// 兼容两种已存在格式：
+    /// - `darwin#24.6.0`（项目默认/README 示例）
+    /// - `darwin-25.1.0`（本地真实配置）
+    pub fn normalized_system_version(&self) -> String {
+        let value = self.system_version.trim();
+
+        if let Some((platform, version)) = value.split_once('#') {
+            if !platform.is_empty() && !version.is_empty() {
+                return format!("{}#{}", platform, version);
+            }
+        }
+
+        if let Some((platform, version)) = value.split_once('-') {
+            if !platform.is_empty() && !version.is_empty() {
+                return format!("{}#{}", platform, version);
+            }
+        }
+
+        value.to_string()
+    }
+
     /// 获取有效的 Auth Region（用于 Token 刷新）
     /// 优先使用 auth_region，未配置时回退到 region
     pub fn effective_auth_region(&self) -> &str {

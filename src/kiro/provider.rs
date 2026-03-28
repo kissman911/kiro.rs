@@ -153,7 +153,7 @@ impl KiroProvider {
             .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
 
         let kiro_version = &config.kiro_version;
-        let os_name = &config.system_version;
+        let os_name = config.normalized_system_version();
         let node_version = &config.node_version;
 
         let x_amz_user_agent = format!("aws-sdk-js/1.0.27 KiroIDE-{}-{}", kiro_version, machine_id);
@@ -205,7 +205,7 @@ impl KiroProvider {
             .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
 
         let kiro_version = &config.kiro_version;
-        let os_name = &config.system_version;
+        let os_name = config.normalized_system_version();
         let node_version = &config.node_version;
 
         let x_amz_user_agent = format!("aws-sdk-js/1.0.27 KiroIDE-{}-{}", kiro_version, machine_id);
