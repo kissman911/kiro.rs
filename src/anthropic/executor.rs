@@ -5,13 +5,20 @@
 
 use std::sync::Arc;
 
-use axum::{body::Body, http::{StatusCode, header}, response::Response};
+use axum::{
+    body::Body,
+    http::{StatusCode, header},
+    response::Response,
+};
 
 use crate::kiro::provider::KiroProvider;
 
+use super::handlers::{
+    build_non_stream_response_from_upstream, create_buffered_sse_stream, create_sse_stream,
+    map_provider_error,
+};
 use super::planner::{ExecutionMode, PhaseKind, RequestPlan};
 use super::stream::{BufferedStreamContext, StreamContext};
-use super::handlers::{build_non_stream_response_from_upstream, create_buffered_sse_stream, create_sse_stream, map_provider_error};
 
 pub enum StreamMode {
     Direct,
@@ -42,15 +49,27 @@ impl SinglePhaseExecutor {
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
 
-        let call_ctx = match self.provider.token_manager().acquire_context(Some(input.model)).await {
+        let call_ctx = match self
+            .provider
+            .token_manager()
+            .acquire_context(Some(input.model))
+            .await
+        {
             Ok(ctx) => ctx,
             Err(e) => return map_provider_error(e),
         };
-        let request_body = match attach_profile_arn(input.request_body, call_ctx.credentials.profile_arn.as_deref()) {
+        let request_body = match attach_profile_arn(
+            input.request_body,
+            call_ctx.credentials.profile_arn.as_deref(),
+        ) {
             Ok(body) => body,
             Err(e) => return map_provider_error(e.into()),
         };
-        let response = match self.provider.call_api_stream_with_context(&call_ctx, &request_body).await {
+        let response = match self
+            .provider
+            .call_api_stream_with_context(&call_ctx, &request_body)
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -92,22 +111,31 @@ impl SinglePhaseExecutor {
         input_tokens: i32,
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
-        let call_ctx = match self.provider.token_manager().acquire_context(Some(model)).await {
+        let call_ctx = match self
+            .provider
+            .token_manager()
+            .acquire_context(Some(model))
+            .await
+        {
             Ok(ctx) => ctx,
             Err(e) => return map_provider_error(e),
         };
-        let request_body = match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
-            Ok(body) => body,
-            Err(e) => return map_provider_error(e.into()),
-        };
-        let response = match self.provider.call_api_with_context(&call_ctx, &request_body).await {
+        let request_body =
+            match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
+                Ok(body) => body,
+                Err(e) => return map_provider_error(e.into()),
+            };
+        let response = match self
+            .provider
+            .call_api_with_context(&call_ctx, &request_body)
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
         build_non_stream_response_from_upstream(response, model, input_tokens).await
     }
 }
-
 
 pub struct TwoPhaseExecutor {
     provider: Arc<KiroProvider>,
@@ -141,14 +169,20 @@ impl TwoPhaseExecutor {
             Err(e) => return map_provider_error(e),
         };
 
-        let main_request_body = match attach_profile_arn(input.request_body, call_ctx.credentials.profile_arn.as_deref()) {
+        let main_request_body = match attach_profile_arn(
+            input.request_body,
+            call_ctx.credentials.profile_arn.as_deref(),
+        ) {
             Ok(body) => body,
             Err(e) => return map_provider_error(e.into()),
         };
 
         if let Ok(preflight_body_raw) = build_preflight_request_body(input.request_body, plan) {
-            let preflight_body = attach_profile_arn(&preflight_body_raw, call_ctx.credentials.profile_arn.as_deref())
-                .unwrap_or(preflight_body_raw);
+            let preflight_body = attach_profile_arn(
+                &preflight_body_raw,
+                call_ctx.credentials.profile_arn.as_deref(),
+            )
+            .unwrap_or(preflight_body_raw);
             tracing::debug!(
                 conversation_id = %plan.identity.conversation_id,
                 credential_id = call_ctx.id,
@@ -168,10 +202,16 @@ impl TwoPhaseExecutor {
                 }
                 Err(err) => {
                     if should_abort_on_preflight_error(&err) {
-                        tracing::warn!("preflight phase failed with credential-scoped error, aborting main phase: {}", err);
+                        tracing::warn!(
+                            "preflight phase failed with credential-scoped error, aborting main phase: {}",
+                            err
+                        );
                         return map_provider_error(err);
                     }
-                    tracing::warn!("preflight phase failed, continuing with main phase: {}", err);
+                    tracing::warn!(
+                        "preflight phase failed, continuing with main phase: {}",
+                        err
+                    );
                 }
             }
         }
@@ -239,14 +279,18 @@ impl TwoPhaseExecutor {
             Err(e) => return map_provider_error(e),
         };
 
-        let main_request_body = match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
-            Ok(body) => body,
-            Err(e) => return map_provider_error(e.into()),
-        };
+        let main_request_body =
+            match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
+                Ok(body) => body,
+                Err(e) => return map_provider_error(e.into()),
+            };
 
         if let Ok(preflight_body_raw) = build_preflight_request_body(request_body, plan) {
-            let preflight_body = attach_profile_arn(&preflight_body_raw, call_ctx.credentials.profile_arn.as_deref())
-                .unwrap_or(preflight_body_raw);
+            let preflight_body = attach_profile_arn(
+                &preflight_body_raw,
+                call_ctx.credentials.profile_arn.as_deref(),
+            )
+            .unwrap_or(preflight_body_raw);
             tracing::debug!(
                 conversation_id = %plan.identity.conversation_id,
                 credential_id = call_ctx.id,
@@ -254,7 +298,11 @@ impl TwoPhaseExecutor {
                 main_model = %main_phase.model_id,
                 "Executing non-stream preflight phase"
             );
-            match self.provider.call_api_with_context(&call_ctx, &preflight_body).await {
+            match self
+                .provider
+                .call_api_with_context(&call_ctx, &preflight_body)
+                .await
+            {
                 Ok(resp) => {
                     if let Err(err) = resp.bytes().await {
                         tracing::warn!("preflight response consume failed: {}", err);
@@ -262,15 +310,25 @@ impl TwoPhaseExecutor {
                 }
                 Err(err) => {
                     if should_abort_on_preflight_error(&err) {
-                        tracing::warn!("preflight phase failed with credential-scoped error, aborting main phase: {}", err);
+                        tracing::warn!(
+                            "preflight phase failed with credential-scoped error, aborting main phase: {}",
+                            err
+                        );
                         return map_provider_error(err);
                     }
-                    tracing::warn!("preflight phase failed, continuing with main phase: {}", err);
+                    tracing::warn!(
+                        "preflight phase failed, continuing with main phase: {}",
+                        err
+                    );
                 }
             }
         }
 
-        let response = match self.provider.call_api_with_context(&call_ctx, &main_request_body).await {
+        let response = match self
+            .provider
+            .call_api_with_context(&call_ctx, &main_request_body)
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -278,7 +336,6 @@ impl TwoPhaseExecutor {
         build_non_stream_response_from_upstream(response, model, input_tokens).await
     }
 }
-
 
 fn build_preflight_request_body(request_body: &str, plan: &RequestPlan) -> anyhow::Result<String> {
     let preflight_phase = plan
@@ -311,9 +368,15 @@ fn build_preflight_request_body(request_body: &str, plan: &RequestPlan) -> anyho
         }
     }
 
-    if let Some(history) = conversation.get_mut("history").and_then(|v| v.as_array_mut()) {
+    if let Some(history) = conversation
+        .get_mut("history")
+        .and_then(|v| v.as_array_mut())
+    {
         for entry in history.iter_mut() {
-            if let Some(user) = entry.get_mut("userInputMessage").and_then(|v| v.as_object_mut()) {
+            if let Some(user) = entry
+                .get_mut("userInputMessage")
+                .and_then(|v| v.as_object_mut())
+            {
                 user.insert(
                     "modelId".to_string(),
                     serde_json::Value::String(preflight_phase.model_id.clone()),
@@ -338,7 +401,6 @@ fn build_preflight_request_body(request_body: &str, plan: &RequestPlan) -> anyho
     Ok(serde_json::to_string(&json)?)
 }
 
-
 fn attach_profile_arn(request_body: &str, profile_arn: Option<&str>) -> anyhow::Result<String> {
     let Some(profile_arn) = profile_arn else {
         return Ok(request_body.to_string());
@@ -354,7 +416,6 @@ fn attach_profile_arn(request_body: &str, profile_arn: Option<&str>) -> anyhow::
     );
     Ok(serde_json::to_string(&json)?)
 }
-
 
 fn should_abort_on_preflight_error(err: &anyhow::Error) -> bool {
     let msg = err.to_string();

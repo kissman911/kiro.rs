@@ -29,14 +29,26 @@ fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
     };
 
     // type（必须是字符串）
-    if !obj.get("type").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
-        obj.insert("type".to_string(), serde_json::Value::String("object".to_string()));
+    if !obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String("object".to_string()),
+        );
     }
 
     // properties（必须是 object）
     match obj.get("properties") {
         Some(serde_json::Value::Object(_)) => {}
-        _ => { obj.insert("properties".to_string(), serde_json::Value::Object(serde_json::Map::new())); }
+        _ => {
+            obj.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
+        }
     }
 
     // required（必须是 string 数组）
@@ -53,7 +65,12 @@ fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Value {
     // additionalProperties（允许 bool 或 object，其他按 true 处理）
     match obj.get("additionalProperties") {
         Some(serde_json::Value::Bool(_)) | Some(serde_json::Value::Object(_)) => {}
-        _ => { obj.insert("additionalProperties".to_string(), serde_json::Value::Bool(true)); }
+        _ => {
+            obj.insert(
+                "additionalProperties".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
     }
 
     serde_json::Value::Object(obj)
@@ -132,7 +149,9 @@ pub struct CurrentMessageData {
     pub tool_results: Vec<ToolResult>,
 }
 
-fn validate_and_trim_messages<'a>(req: &'a MessagesRequest) -> Result<&'a [super::types::Message], ConversionError> {
+fn validate_and_trim_messages<'a>(
+    req: &'a MessagesRequest,
+) -> Result<&'a [super::types::Message], ConversionError> {
     if req.messages.is_empty() {
         return Err(ConversionError::EmptyMessages);
     }
@@ -168,7 +187,9 @@ fn build_request_identity(req: &MessagesRequest) -> RequestIdentityData {
     }
 }
 
-fn build_current_message_data(last_message: &super::types::Message) -> Result<CurrentMessageData, ConversionError> {
+fn build_current_message_data(
+    last_message: &super::types::Message,
+) -> Result<CurrentMessageData, ConversionError> {
     let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
     Ok(CurrentMessageData {
         text_content,
@@ -193,7 +214,10 @@ fn enrich_tools_from_history(mut tools: Vec<Tool>, history: &[Message]) -> Vec<T
     tools
 }
 
-fn build_user_input_context(tools: Vec<Tool>, tool_results: Vec<ToolResult>) -> UserInputMessageContext {
+fn build_user_input_context(
+    tools: Vec<Tool>,
+    tool_results: Vec<ToolResult>,
+) -> UserInputMessageContext {
     let mut context = UserInputMessageContext::new();
     if !tools.is_empty() {
         context = context.with_tools(tools);
@@ -204,7 +228,11 @@ fn build_user_input_context(tools: Vec<Tool>, tool_results: Vec<ToolResult>) -> 
     context
 }
 
-fn build_current_message(model_id: &str, current: CurrentMessageData, context: UserInputMessageContext) -> CurrentMessage {
+fn build_current_message(
+    model_id: &str,
+    current: CurrentMessageData,
+    context: UserInputMessageContext,
+) -> CurrentMessage {
     let mut user_input = UserInputMessage::new(current.text_content, model_id)
         .with_context(context)
         .with_origin("AI_EDITOR");
@@ -216,7 +244,11 @@ fn build_current_message(model_id: &str, current: CurrentMessageData, context: U
     CurrentMessage::new(user_input)
 }
 
-fn build_conversation_state(identity: RequestIdentityData, current_message: CurrentMessage, history: Vec<Message>) -> ConversationState {
+fn build_conversation_state(
+    identity: RequestIdentityData,
+    current_message: CurrentMessage,
+    history: Vec<Message>,
+) -> ConversationState {
     ConversationState::new(identity.conversation_id)
         .with_agent_continuation_id(identity.agent_continuation_id)
         .with_agent_task_type("vibe")
@@ -570,7 +602,9 @@ fn convert_tools(tools: &Option<Vec<super::types::Tool>>) -> Vec<Tool> {
                 tool_specification: ToolSpecification {
                     name: t.name.clone(),
                     description,
-                    input_schema: InputSchema::from_json(normalize_json_schema(serde_json::json!(t.input_schema))),
+                    input_schema: InputSchema::from_json(normalize_json_schema(serde_json::json!(
+                        t.input_schema
+                    ))),
                 },
             }
         })
@@ -613,7 +647,11 @@ fn has_thinking_tags(content: &str) -> bool {
 ///   注意：该切片与 `req.messages` 可能不同（prefill 时会截断末尾的 assistant 消息），
 ///   调用方应始终使用此参数而非 `req.messages`。
 /// * `model_id` - 已映射的 Kiro 模型 ID
-fn build_history(req: &MessagesRequest, messages: &[super::types::Message], model_id: &str) -> Result<Vec<Message>, ConversionError> {
+fn build_history(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+    model_id: &str,
+) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
     // 生成thinking前缀（如果需要）
@@ -1493,9 +1531,15 @@ mod tests {
 
         let content = &result.assistant_response_message.content;
         assert!(content.contains("<thinking>"), "应包含 thinking 标签");
-        assert!(content.contains("Let me read that file"), "应包含第二条消息的 text 内容");
+        assert!(
+            content.contains("Let me read that file"),
+            "应包含第二条消息的 text 内容"
+        );
 
-        let tool_uses = result.assistant_response_message.tool_uses.expect("应有 tool_uses");
+        let tool_uses = result
+            .assistant_response_message
+            .tool_uses
+            .expect("应有 tool_uses");
         assert_eq!(tool_uses.len(), 1);
         assert_eq!(tool_uses[0].tool_use_id, "toolu_01ABC");
     }
@@ -1545,7 +1589,11 @@ mod tests {
         };
 
         let result = convert_request(&req);
-        assert!(result.is_ok(), "连续 assistant 消息场景不应报错: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "连续 assistant 消息场景不应报错: {:?}",
+            result.err()
+        );
 
         let state = result.unwrap().conversation_state;
         let mut found_tool_use = false;
