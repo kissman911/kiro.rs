@@ -115,8 +115,21 @@ fn default_kiro_version() -> String {
     "0.10.0".to_string()
 }
 
-/// 默认 systemVersion 候选池
-const SYSTEM_VERSION_POOL: &[&str] = &["darwin#24.6.0", "win32#10.0.22631"];
+/// 默认 systemVersion 候选池（扩充版，覆盖主流 macOS/Windows 版本）
+const SYSTEM_VERSION_POOL: &[&str] = &[
+    // macOS (Darwin kernel versions)
+    "darwin#24.6.0",  // macOS 15.6 Sequoia
+    "darwin#24.2.0",  // macOS 15.2 Sequoia
+    "darwin#23.6.0",  // macOS 14.6 Sonoma
+    "darwin#23.4.0",  // macOS 14.4 Sonoma
+    "darwin#22.6.0",  // macOS 13.6 Ventura
+    "darwin#21.6.0",  // macOS 12.6 Monterey
+    // Windows (NT kernel versions)
+    "win32#10.0.22631", // Windows 11 23H2
+    "win32#10.0.22621", // Windows 11 22H2
+    "win32#10.0.19045", // Windows 10 22H2
+    "win32#10.0.19044", // Windows 10 21H2
+];
 
 fn default_system_version() -> String {
     // 初始随机选择；进程启动后由 stabilize_system_version 基于 machineId 确定性覆盖

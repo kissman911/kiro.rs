@@ -23,6 +23,8 @@ use parking_lot::Mutex;
 const MAX_RETRIES_PER_CREDENTIAL: usize = 3;
 
 /// AWS SDK JS 版本号（所有出站请求统一使用）
+/// 注意：此版本号应与官方 Kiro IDE 保持同步，建议定期检查更新
+/// 当前版本基于 2026-03 观察到的真实 Kiro IDE 请求
 pub(crate) const AWS_SDK_JS_VERSION: &str = "1.0.27";
 
 /// codewhispererstreaming API 版本号

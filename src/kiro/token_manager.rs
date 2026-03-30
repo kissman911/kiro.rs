@@ -234,9 +234,6 @@ async fn refresh_social_token(
     Ok(new_credentials)
 }
 
-/// IdC Token 刷新所需的 x-amz-user-agent header
-const IDC_AMZ_USER_AGENT: &str = "aws-sdk-js/3.738.0 ua/2.1 os/other lang/js md/browser#unknown_unknown api/sso-oidc#3.738.0 m/E KiroIDE";
-
 /// 刷新 IdC Token (AWS SSO OIDC)
 async fn refresh_idc_token(
     credentials: &KiroCredentials,
@@ -259,6 +256,21 @@ async fn refresh_idc_token(
     let region = credentials.effective_auth_region(config);
     let refresh_url = format!("https://oidc.{}.amazonaws.com/token", region);
 
+    // 构建与 API 调用一致的 User-Agent（使用 config 中的 systemVersion 和 nodeVersion）
+    let machine_id = machine_id::generate_from_credentials(credentials, config)
+        .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
+    let kiro_version = &config.kiro_version;
+    let os_name = config.normalized_system_version();
+    let node_version = &config.node_version;
+    
+    // IdC 刷新使用与 API 调用相同的 SDK 版本和格式
+    let sdk_version = crate::kiro::provider::AWS_SDK_JS_VERSION;
+    let x_amz_user_agent = format!("aws-sdk-js/{} KiroIDE-{}-{}", sdk_version, kiro_version, machine_id);
+    let user_agent = format!(
+        "aws-sdk-js/{} ua/2.1 os/{} lang/js md/nodejs#{} api/sso-oidc#{} m/E KiroIDE-{}-{}",
+        sdk_version, os_name, node_version, sdk_version, kiro_version, machine_id
+    );
+
     let client = build_client(proxy, 60, config.tls_backend)?;
     let body = IdcRefreshRequest {
         client_id: client_id.to_string(),
@@ -272,11 +284,11 @@ async fn refresh_idc_token(
         .header("Content-Type", "application/json")
         .header("Host", format!("oidc.{}.amazonaws.com", region))
         .header("Connection", "keep-alive")
-        .header("x-amz-user-agent", IDC_AMZ_USER_AGENT)
+        .header("x-amz-user-agent", &x_amz_user_agent)
         .header("Accept", "*/*")
         .header("Accept-Language", "*")
         .header("sec-fetch-mode", "cors")
-        .header("User-Agent", "node")
+        .header("User-Agent", &user_agent)
         .header("Accept-Encoding", "br, gzip, deflate")
         .json(&body)
         .send()
