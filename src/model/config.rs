@@ -115,9 +115,12 @@ fn default_kiro_version() -> String {
     "0.10.0".to_string()
 }
 
+/// 默认 systemVersion 候选池
+const SYSTEM_VERSION_POOL: &[&str] = &["darwin#24.6.0", "win32#10.0.22631"];
+
 fn default_system_version() -> String {
-    const SYSTEM_VERSIONS: &[&str] = &["darwin#24.6.0", "win32#10.0.22631"];
-    SYSTEM_VERSIONS[fastrand::usize(..SYSTEM_VERSIONS.len())].to_string()
+    // 初始随机选择；进程启动后由 stabilize_system_version 基于 machineId 确定性覆盖
+    SYSTEM_VERSION_POOL[fastrand::usize(..SYSTEM_VERSION_POOL.len())].to_string()
 }
 
 fn default_node_version() -> String {
@@ -138,12 +141,6 @@ fn default_load_balancing_mode() -> String {
 
 fn is_supported_system_platform(platform: &str) -> bool {
     matches!(platform, "darwin" | "win32" | "linux")
-}
-
-fn is_system_version_like(version: &str) -> bool {
-    !version.is_empty()
-        && version.chars().any(|c| c.is_ascii_digit())
-        && version.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 impl Default for Config {
@@ -180,27 +177,55 @@ impl Config {
         "config.json"
     }
 
+    /// 基于 machineId 确定性地固定 systemVersion。
+    ///
+    /// 仅当用户未在 config.json 中显式配置 systemVersion 时生效（即当前值属于默认候选池）。
+    /// 用 machineId 的首字节做确定性选择，确保同一 machineId 在重启间始终对应同一平台。
+    pub fn stabilize_system_version(&mut self, machine_id: &str) {
+        let is_default = SYSTEM_VERSION_POOL.contains(&self.system_version.as_str());
+        if !is_default || machine_id.is_empty() {
+            return;
+        }
+        // 取 machineId 首个十六进制字符的数值做索引
+        let idx = machine_id
+            .chars()
+            .next()
+            .and_then(|c| c.to_digit(16))
+            .unwrap_or(0) as usize;
+        self.system_version = SYSTEM_VERSION_POOL[idx % SYSTEM_VERSION_POOL.len()].to_string();
+    }
+
     /// 规范化 systemVersion 为 Kiro User-Agent 使用的 `platform#version` 形式。
     ///
-    /// 兼容两种已存在格式：
+    /// 兼容多种已存在格式：
     /// - `darwin#24.6.0`（项目默认/README 示例）
     /// - `darwin-25.1.0`（本地真实配置）
+    /// - `linux-5.15.0-generic`（带多个连字符的内核版本）
     pub fn normalized_system_version(&self) -> String {
         let value = self.system_version.trim();
 
+        // 优先尝试 '#' 分隔（标准格式）
         if let Some((platform, version)) = value.split_once('#') {
             let platform = platform.trim();
             let version = version.trim();
-            if is_supported_system_platform(platform) && is_system_version_like(version) {
+            if is_supported_system_platform(platform) && !version.is_empty() {
                 return format!("{}#{}", platform, version);
             }
         }
 
+        // 尝试 '-' 分隔：取第一个 '-' 前的部分作为 platform，其余全部作为 version
         if let Some((platform, version)) = value.split_once('-') {
             let platform = platform.trim();
             let version = version.trim();
-            if is_supported_system_platform(platform) && is_system_version_like(version) {
-                return format!("{}#{}", platform, version);
+            if is_supported_system_platform(platform) && !version.is_empty() {
+                // 只保留版本号的纯数字+点部分（截取到第一个非数字非点字符）
+                let clean_version: String = version
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
+                if !clean_version.is_empty() {
+                    return format!("{}#{}", platform, clean_version);
+                }
             }
         }
 

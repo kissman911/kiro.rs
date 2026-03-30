@@ -33,7 +33,7 @@ async fn main() {
     let config_path = args
         .config
         .unwrap_or_else(|| Config::default_config_path().to_string());
-    let config = Config::load(&config_path).unwrap_or_else(|e| {
+    let mut config = Config::load(&config_path).unwrap_or_else(|e| {
         tracing::error!("加载配置失败: {}", e);
         std::process::exit(1);
     });
@@ -57,6 +57,11 @@ async fn main() {
     // 获取第一个凭据用于日志显示
     let first_credentials = credentials_list.first().cloned().unwrap_or_default();
     tracing::debug!("主凭证: {:?}", first_credentials);
+
+    // 基于 machineId 确定性固定 systemVersion（避免重启间随机切换平台身份）
+    if let Some(mid) = kiro::machine_id::generate_from_credentials(&first_credentials, &config) {
+        config.stabilize_system_version(&mid);
+    }
 
     // 获取 API Key
     let api_key = config.api_key.clone().unwrap_or_else(|| {

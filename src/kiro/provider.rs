@@ -22,8 +22,46 @@ use parking_lot::Mutex;
 /// 每个凭据的最大重试次数
 const MAX_RETRIES_PER_CREDENTIAL: usize = 3;
 
+/// AWS SDK JS 版本号（所有出站请求统一使用）
+pub(crate) const AWS_SDK_JS_VERSION: &str = "1.0.27";
+
+/// codewhispererstreaming API 版本号
+const STREAMING_API_VERSION: &str = "1.0.27";
+
 /// 总重试次数硬上限（避免无限重试）
 const MAX_TOTAL_RETRIES: usize = 9;
+
+/// API 调用错误分类
+///
+/// 用于 `call_api_once_with_context` 向外层重试逻辑传递结构化的错误信息，
+/// 避免依赖字符串匹配来判断错误类别。
+#[allow(dead_code)]
+enum ApiCallError {
+    /// 400 Bad Request / 输入过长等请求本身的问题，重试无意义
+    BadRequest(String),
+    /// 402 额度用尽，`has_available` 表示是否还有其他可用凭据
+    QuotaExhausted { msg: String, has_available: bool },
+    /// 401/403 凭据/权限问题，`has_available` 表示是否还有其他可用凭据
+    CredentialFailure { msg: String, has_available: bool },
+    /// 429/5xx 等瞬态上游错误，可重试但不动凭据状态
+    Transient(String),
+    /// 网络层错误（连接超时、DNS 失败等），可重试但不动凭据状态
+    Network(anyhow::Error),
+    /// 其他错误（构建请求头失败等）
+    Other(anyhow::Error),
+}
+
+impl From<ApiCallError> for anyhow::Error {
+    fn from(e: ApiCallError) -> Self {
+        match e {
+            ApiCallError::BadRequest(msg)
+            | ApiCallError::Transient(msg)
+            | ApiCallError::QuotaExhausted { msg, .. }
+            | ApiCallError::CredentialFailure { msg, .. } => anyhow::anyhow!(msg),
+            ApiCallError::Network(inner) | ApiCallError::Other(inner) => inner,
+        }
+    }
+}
 
 /// Kiro API Provider
 ///
@@ -50,8 +88,8 @@ impl KiroProvider {
     pub fn with_proxy(token_manager: Arc<MultiTokenManager>, proxy: Option<ProxyConfig>) -> Self {
         let tls_backend = token_manager.config().tls_backend;
         // 预热：构建全局代理对应的 Client
-        let initial_client = build_client(proxy.as_ref(), 720, tls_backend)
-            .expect("创建 HTTP 客户端失败");
+        let initial_client =
+            build_client(proxy.as_ref(), 720, tls_backend).expect("创建 HTTP 客户端失败");
         let mut cache = HashMap::new();
         cache.insert(proxy.clone(), initial_client);
 
@@ -98,7 +136,10 @@ impl KiroProvider {
 
     /// 获取 API 基础域名（使用 config 级 api_region）
     pub fn base_domain(&self) -> String {
-        format!("q.{}.amazonaws.com", self.token_manager.config().effective_api_region())
+        format!(
+            "q.{}.amazonaws.com",
+            self.token_manager.config().effective_api_region()
+        )
     }
 
     /// 获取凭据级 API 基础 URL
@@ -156,11 +197,11 @@ impl KiroProvider {
         let os_name = config.normalized_system_version();
         let node_version = &config.node_version;
 
-        let x_amz_user_agent = format!("aws-sdk-js/1.0.27 KiroIDE-{}-{}", kiro_version, machine_id);
+        let x_amz_user_agent = format!("aws-sdk-js/{} KiroIDE-{}-{}", AWS_SDK_JS_VERSION, kiro_version, machine_id);
 
         let user_agent = format!(
-            "aws-sdk-js/1.0.27 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.27 m/E KiroIDE-{}-{}",
-            os_name, node_version, kiro_version, machine_id
+            "aws-sdk-js/{} ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#{} m/E KiroIDE-{}-{}",
+            AWS_SDK_JS_VERSION, os_name, node_version, STREAMING_API_VERSION, kiro_version, machine_id
         );
 
         let mut headers = HeaderMap::new();
@@ -179,7 +220,10 @@ impl KiroProvider {
             reqwest::header::USER_AGENT,
             HeaderValue::from_str(&user_agent).unwrap(),
         );
-        headers.insert(HOST, HeaderValue::from_str(&self.base_domain_for(&ctx.credentials)).unwrap());
+        headers.insert(
+            HOST,
+            HeaderValue::from_str(&self.base_domain_for(&ctx.credentials)).unwrap(),
+        );
         headers.insert(
             "amz-sdk-invocation-id",
             HeaderValue::from_str(&Uuid::new_v4().to_string()).unwrap(),
@@ -208,11 +252,11 @@ impl KiroProvider {
         let os_name = config.normalized_system_version();
         let node_version = &config.node_version;
 
-        let x_amz_user_agent = format!("aws-sdk-js/1.0.27 KiroIDE-{}-{}", kiro_version, machine_id);
+        let x_amz_user_agent = format!("aws-sdk-js/{} KiroIDE-{}-{}", AWS_SDK_JS_VERSION, kiro_version, machine_id);
 
         let user_agent = format!(
-            "aws-sdk-js/1.0.27 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.27 m/E KiroIDE-{}-{}",
-            os_name, node_version, kiro_version, machine_id
+            "aws-sdk-js/{} ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#{} m/E KiroIDE-{}-{}",
+            AWS_SDK_JS_VERSION, os_name, node_version, STREAMING_API_VERSION, kiro_version, machine_id
         );
 
         let mut headers = HeaderMap::new();
@@ -224,7 +268,10 @@ impl KiroProvider {
             HeaderValue::from_str(&x_amz_user_agent).unwrap(),
         );
         headers.insert("user-agent", HeaderValue::from_str(&user_agent).unwrap());
-        headers.insert("host", HeaderValue::from_str(&self.base_domain_for(&ctx.credentials)).unwrap());
+        headers.insert(
+            "host",
+            HeaderValue::from_str(&self.base_domain_for(&ctx.credentials)).unwrap(),
+        );
         headers.insert(
             "amz-sdk-invocation-id",
             HeaderValue::from_str(&Uuid::new_v4().to_string()).unwrap(),
@@ -245,23 +292,29 @@ impl KiroProvider {
     /// 发送非流式 API 请求（复用已获取的调用上下文）
     ///
     /// 用于需要在同一用户 turn 内固定凭据/Token 的场景。
+    /// 注意：此方法不含重试逻辑，网络错误不会更新凭据状态（与原始行为一致）。
     pub async fn call_api_with_context(
         &self,
         ctx: &CallContext,
         request_body: &str,
     ) -> anyhow::Result<reqwest::Response> {
-        self.call_api_once_with_context(ctx, request_body, false).await
+        self.call_api_once_with_context(ctx, request_body, false)
+            .await
+            .map_err(|e| e.into())
     }
 
     /// 发送流式 API 请求（复用已获取的调用上下文）
     ///
     /// 用于需要在同一用户 turn 内固定凭据/Token 的场景。
+    /// 注意：此方法不含重试逻辑，网络错误不会更新凭据状态（与原始行为一致）。
     pub async fn call_api_stream_with_context(
         &self,
         ctx: &CallContext,
         request_body: &str,
     ) -> anyhow::Result<reqwest::Response> {
-        self.call_api_once_with_context(ctx, request_body, true).await
+        self.call_api_once_with_context(ctx, request_body, true)
+            .await
+            .map_err(|e| e.into())
     }
 
     /// 发送 MCP API 请求（复用已获取的调用上下文）
@@ -507,56 +560,113 @@ impl KiroProvider {
                 }
             };
 
-            match self.call_api_once_with_context(&ctx, request_body, is_stream).await {
+            match self
+                .call_api_once_with_context(&ctx, request_body, is_stream)
+                .await
+            {
                 Ok(response) => return Ok(response),
-                Err(e) => {
-                    let err_str = e.to_string();
-
-                    // 400 Bad Request / 上下文窗口满 / 输入过长：直接返回
-                    if err_str.contains("400")
-                        || err_str.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
-                        || err_str.contains("Input is too long")
-                    {
-                        return Err(e);
+                Err(e) => match e {
+                    // 400 / 输入过长：请求本身有问题，重试无意义
+                    ApiCallError::BadRequest(msg) => {
+                        return Err(anyhow::anyhow!(msg));
                     }
-
-                    last_error = Some(e);
-                    if attempt + 1 < max_retries {
+                    // 402 额度用尽：如果所有凭据都用尽则立即终止
+                    ApiCallError::QuotaExhausted { msg, has_available } => {
+                        if !has_available {
+                            return Err(anyhow::anyhow!(
+                                "{} API 请求失败（所有凭据已用尽）",
+                                api_type
+                            ));
+                        }
                         tracing::warn!(
-                            "{} API 请求失败（尝试 {}/{}），准备重试",
+                            "{} API 请求失败（额度已用尽，切换凭据，尝试 {}/{}）",
                             api_type,
                             attempt + 1,
                             max_retries
                         );
-                        sleep(Self::retry_delay(attempt)).await;
+                        last_error = Some(anyhow::anyhow!(msg));
+                        // 额度用尽切换凭据，不需要退避延迟
+                        continue;
                     }
-                }
+                    // 401/403 凭据问题：如果所有凭据都失败则立即终止
+                    ApiCallError::CredentialFailure { msg, has_available } => {
+                        if !has_available {
+                            return Err(anyhow::anyhow!(
+                                "{} API 请求失败（所有凭据已用尽）",
+                                api_type
+                            ));
+                        }
+                        tracing::warn!(
+                            "{} API 请求失败（凭据错误，切换凭据，尝试 {}/{}）",
+                            api_type,
+                            attempt + 1,
+                            max_retries
+                        );
+                        last_error = Some(anyhow::anyhow!(msg));
+                        continue;
+                    }
+                    // 网络错误 / 瞬态错误：重试但不动凭据状态
+                    ApiCallError::Network(inner) | ApiCallError::Other(inner) => {
+                        tracing::warn!(
+                            "{} API 请求失败（尝试 {}/{}）: {}",
+                            api_type,
+                            attempt + 1,
+                            max_retries,
+                            inner
+                        );
+                        last_error = Some(inner);
+                        if attempt + 1 < max_retries {
+                            sleep(Self::retry_delay(attempt)).await;
+                        }
+                    }
+                    ApiCallError::Transient(msg) => {
+                        tracing::warn!(
+                            "{} API 请求失败（上游瞬态错误，尝试 {}/{}）",
+                            api_type,
+                            attempt + 1,
+                            max_retries
+                        );
+                        last_error = Some(anyhow::anyhow!(msg));
+                        if attempt + 1 < max_retries {
+                            sleep(Self::retry_delay(attempt)).await;
+                        }
+                    }
+                },
             }
         }
 
         Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("{} API 请求失败：已达到最大重试次数（{}次）", api_type, max_retries)
+            anyhow::anyhow!(
+                "{} API 请求失败：已达到最大重试次数（{}次）",
+                api_type,
+                max_retries
+            )
         }))
     }
 
     /// 使用固定上下文发送单次 API 请求（无凭据切换）
+    ///
+    /// 返回 `ApiCallError` 以便外层重试逻辑根据错误类别做出精确决策，
+    /// 而不是依赖字符串匹配。
     async fn call_api_once_with_context(
         &self,
         ctx: &CallContext,
         request_body: &str,
         is_stream: bool,
-    ) -> anyhow::Result<reqwest::Response> {
+    ) -> Result<reqwest::Response, ApiCallError> {
         let api_type = if is_stream { "流式" } else { "非流式" };
         let url = self.base_url_for(&ctx.credentials);
-        let headers = self.build_headers(ctx)?;
+        let headers = self.build_headers(ctx).map_err(ApiCallError::Other)?;
 
         let response = self
-            .client_for(&ctx.credentials)?
+            .client_for(&ctx.credentials)
+            .map_err(|e| ApiCallError::Other(e))?
             .post(&url)
             .headers(headers)
             .body(request_body.to_string())
             .send()
-            .await?;
+            .await
+            .map_err(|e| ApiCallError::Network(e.into()))?;
 
         let status = response.status();
 
@@ -566,23 +676,27 @@ impl KiroProvider {
         }
 
         let body = response.text().await.unwrap_or_default();
+        let msg = format!("{} API 请求失败: {} {}", api_type, status, body);
 
         if status.as_u16() == 402 && Self::is_monthly_request_limit(&body) {
-            self.token_manager.report_quota_exhausted(ctx.id);
-            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
-        }
-
-        if status.as_u16() == 400 {
-            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+            let has_available = self.token_manager.report_quota_exhausted(ctx.id);
+            return Err(ApiCallError::QuotaExhausted { msg, has_available });
         }
 
         if matches!(status.as_u16(), 401 | 403) {
-            self.token_manager.report_failure(ctx.id);
-            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+            let has_available = self.token_manager.report_failure(ctx.id);
+            return Err(ApiCallError::CredentialFailure { msg, has_available });
         }
 
-        // 其他错误交给外层重试逻辑处理
-        anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        if status.as_u16() == 400
+            || body.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+            || body.contains("Input is too long")
+        {
+            return Err(ApiCallError::BadRequest(msg));
+        }
+
+        // 429/5xx/其他：瞬态错误，交给外层重试（不动凭据状态）
+        Err(ApiCallError::Transient(msg))
     }
 
     fn retry_delay(attempt: usize) -> Duration {
