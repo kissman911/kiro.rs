@@ -6,6 +6,11 @@ export interface CredentialsStatusResponse {
   credentials: CredentialStatusItem[]
 }
 
+export interface RateLimitRule {
+  window: string
+  maxRequests: number
+}
+
 // 单个凭据状态
 export interface CredentialStatusItem {
   id: number
@@ -27,6 +32,7 @@ export interface CredentialStatusItem {
   refreshFailureCount: number
   disabledReason?: string
   endpoint: string
+  rateLimits?: RateLimitRule[]
 }
 
 // 余额响应
@@ -63,6 +69,10 @@ export interface SetPriorityRequest {
   priority: number
 }
 
+export interface SetRateLimitsRequest {
+  rateLimits: RateLimitRule[] | null
+}
+
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
@@ -78,6 +88,7 @@ export interface AddCredentialRequest {
   proxyPassword?: string
   kiroApiKey?: string
   endpoint?: string
+  rateLimits?: RateLimitRule[]
 }
 
 // 添加凭据响应

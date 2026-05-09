@@ -6,8 +6,10 @@ import type {
   SuccessResponse,
   SetDisabledRequest,
   SetPriorityRequest,
+  SetRateLimitsRequest,
   AddCredentialRequest,
   AddCredentialResponse,
+  RateLimitRule,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -53,6 +55,18 @@ export async function setCredentialPriority(
   const { data } = await api.post<SuccessResponse>(
     `/credentials/${id}/priority`,
     { priority } as SetPriorityRequest
+  )
+  return data
+}
+
+// 设置凭据级限流规则
+export async function setCredentialRateLimits(
+  id: number,
+  rateLimits: RateLimitRule[] | null
+): Promise<SuccessResponse> {
+  const { data } = await api.put<SuccessResponse>(
+    `/credentials/${id}/rate-limits`,
+    { rateLimits } as SetRateLimitsRequest
   )
   return data
 }

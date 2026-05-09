@@ -10,7 +10,7 @@ use super::{
     middleware::AdminState,
     types::{
         AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SuccessResponse,
+        SetRateLimitsRequest, SuccessResponse,
     },
 };
 
@@ -50,6 +50,22 @@ pub async fn set_credential_priority(
             id, payload.priority
         )))
         .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// PUT /api/admin/credentials/:id/rate-limits
+/// 设置凭据级限流规则
+pub async fn set_credential_rate_limits(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetRateLimitsRequest>,
+) -> impl IntoResponse {
+    match state
+        .service
+        .set_credential_rate_limits(id, payload.rate_limits)
+    {
+        Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 限流规则已更新", id))).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

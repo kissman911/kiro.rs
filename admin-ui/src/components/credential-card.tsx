@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2 } from 'lucide-react'
+import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { CredentialStatusItem, BalanceResponse } from '@/types/api'
+import type { CredentialStatusItem, BalanceResponse, RateLimitRule } from '@/types/api'
 import {
   useSetDisabled,
   useSetPriority,
@@ -24,6 +24,7 @@ import {
   useForceRefreshToken,
   useResetSuccessCount,
 } from '@/hooks/use-credentials'
+import { RateLimitDialog } from '@/components/rate-limit-dialog'
 
 interface CredentialCardProps {
   credential: CredentialStatusItem
@@ -32,6 +33,11 @@ interface CredentialCardProps {
   onToggleSelect: () => void
   balance: BalanceResponse | null
   loadingBalance: boolean
+}
+
+function formatRateLimits(rules?: RateLimitRule[]): string {
+  if (!rules || rules.length === 0) return '使用全局默认'
+  return rules.map((rule) => `${rule.window}/${rule.maxRequests}`).join('，')
 }
 
 function formatLastUsed(lastUsedAt: string | null): string {
@@ -61,6 +67,7 @@ export function CredentialCard({
   const [editingPriority, setEditingPriority] = useState(false)
   const [priorityValue, setPriorityValue] = useState(String(credential.priority))
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showRateLimitDialog, setShowRateLimitDialog] = useState(false)
 
   const setDisabled = useSetDisabled()
   const setPriority = useSetPriority()
@@ -301,6 +308,17 @@ export function CredentialCard({
                 <span className="text-sm text-muted-foreground ml-1">未知</span>
               )}
             </div>
+            <div className="col-span-2">
+              <span className="text-muted-foreground">RPM 限流：</span>
+              <span className="font-medium">{formatRateLimits(credential.rateLimits)}</span>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:underline ml-2"
+                onClick={() => setShowRateLimitDialog(true)}
+              >
+                设置
+              </button>
+            </div>
             {credential.hasProxy && (
               <div className="col-span-2">
                 <span className="text-muted-foreground">代理：</span>
@@ -373,6 +391,14 @@ export function CredentialCard({
             </Button>
             <Button
               size="sm"
+              variant="outline"
+              onClick={() => setShowRateLimitDialog(true)}
+            >
+              <Gauge className="h-4 w-4 mr-1" />
+              RPM 限制
+            </Button>
+            <Button
+              size="sm"
               variant="default"
               onClick={() => onViewBalance(credential.id)}
             >
@@ -392,6 +418,12 @@ export function CredentialCard({
           </div>
         </CardContent>
       </Card>
+
+      <RateLimitDialog
+        credential={credential}
+        open={showRateLimitDialog}
+        onOpenChange={setShowRateLimitDialog}
+      />
 
       {/* 删除确认对话框 */}
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>

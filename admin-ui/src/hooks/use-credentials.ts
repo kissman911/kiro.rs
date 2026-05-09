@@ -3,6 +3,7 @@ import {
   getCredentials,
   setCredentialDisabled,
   setCredentialPriority,
+  setCredentialRateLimits,
   resetCredentialFailure,
   forceRefreshToken,
   getCredentialBalance,
@@ -13,7 +14,7 @@ import {
   resetSuccessCount,
   resetAllSuccessCount,
 } from '@/api/credentials'
-import type { AddCredentialRequest } from '@/types/api'
+import type { AddCredentialRequest, RateLimitRule } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -52,6 +53,18 @@ export function useSetPriority() {
   return useMutation({
     mutationFn: ({ id, priority }: { id: number; priority: number }) =>
       setCredentialPriority(id, priority),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 设置凭据级限流规则
+export function useSetRateLimits() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, rateLimits }: { id: number; rateLimits: RateLimitRule[] | null }) =>
+      setCredentialRateLimits(id, rateLimits),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
     },

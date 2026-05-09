@@ -64,6 +64,9 @@ pub struct CredentialStatusItem {
     pub disabled_reason: Option<String>,
     /// 端点名称（决定该凭据走哪套 Kiro API，已回退到默认端点）
     pub endpoint: String,
+    /// 凭据级限流规则（未配置时为 None，运行时会回退到全局 defaultRateLimits）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<Vec<RateLimitRule>>,
 }
 
 // ============ 操作请求 ============
@@ -82,6 +85,15 @@ pub struct SetDisabledRequest {
 pub struct SetPriorityRequest {
     /// 新优先级值
     pub priority: u32,
+}
+
+/// 修改凭据级限流规则请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetRateLimitsRequest {
+    /// 新限流规则；传 null 或空数组表示清空凭据级限流并回退到全局默认
+    #[serde(default)]
+    pub rate_limits: Option<Vec<RateLimitRule>>,
 }
 
 /// 添加凭据请求

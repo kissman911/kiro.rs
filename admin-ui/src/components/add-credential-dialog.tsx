@@ -33,6 +33,8 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
   const [endpoint, setEndpoint] = useState('')
+  const [rateLimitWindow, setRateLimitWindow] = useState('')
+  const [rateLimitMaxRequests, setRateLimitMaxRequests] = useState('')
 
   const { mutate, isPending } = useAddCredential()
 
@@ -50,6 +52,8 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setProxyUsername('')
     setProxyPassword('')
     setEndpoint('')
+    setRateLimitWindow('')
+    setRateLimitMaxRequests('')
   }
 
   const isApiKey = authMethod === 'api_key'
@@ -75,6 +79,22 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
       }
     }
 
+    let rateLimits
+    const hasRateLimit = rateLimitWindow.trim() || rateLimitMaxRequests.trim()
+    if (hasRateLimit) {
+      const window = rateLimitWindow.trim()
+      const maxRequests = Number(rateLimitMaxRequests.trim())
+      if (!/^\d+[smhd]$/.test(window)) {
+        toast.error('限流窗口格式必须类似 30s / 1m / 5m / 1h / 1d')
+        return
+      }
+      if (!Number.isInteger(maxRequests) || maxRequests <= 0) {
+        toast.error('限流请求数必须是大于 0 的整数')
+        return
+      }
+      rateLimits = [{ window, maxRequests }]
+    }
+
     mutate(
       {
         authMethod,
@@ -90,6 +110,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         proxyUsername: proxyUsername.trim() || undefined,
         proxyPassword: proxyPassword.trim() || undefined,
         endpoint: endpoint.trim() || undefined,
+        rateLimits,
       },
       {
         onSuccess: (data) => {
@@ -274,6 +295,32 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               />
               <p className="text-xs text-muted-foreground">
                 可选。决定该凭据走哪套 Kiro API。留空使用全局 defaultEndpoint
+              </p>
+            </div>
+
+            {/* 限流配置 */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">RPM / 限流配置</label>
+              <div className="grid grid-cols-2 gap-2">
+                <Input
+                  id="rateLimitWindow"
+                  placeholder="窗口，如 1m"
+                  value={rateLimitWindow}
+                  onChange={(e) => setRateLimitWindow(e.target.value)}
+                  disabled={isPending}
+                />
+                <Input
+                  id="rateLimitMaxRequests"
+                  type="number"
+                  min="1"
+                  placeholder="最大请求数，如 5"
+                  value={rateLimitMaxRequests}
+                  onChange={(e) => setRateLimitMaxRequests(e.target.value)}
+                  disabled={isPending}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                可选。例：1m + 5 = 每分钟最多 5 次。不填则使用全局默认限流
               </p>
             </div>
 

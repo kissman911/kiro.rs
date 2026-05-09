@@ -2,7 +2,7 @@
 
 use axum::{
     Router, middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 
 use super::{
@@ -10,7 +10,7 @@ use super::{
         add_credential, delete_credential, force_refresh_token, get_all_credentials,
         get_credential_balance, get_load_balancing_mode, reset_all_success_count,
         reset_failure_count, reset_success_count, set_credential_disabled, set_credential_priority,
-        set_load_balancing_mode,
+        set_credential_rate_limits, set_load_balancing_mode,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -23,6 +23,7 @@ use super::{
 /// - `DELETE /credentials/:id` - 删除凭据
 /// - `POST /credentials/:id/disabled` - 设置凭据禁用状态
 /// - `POST /credentials/:id/priority` - 设置凭据优先级
+/// - `PUT /credentials/:id/rate-limits` - 设置凭据级限流规则
 /// - `POST /credentials/:id/reset` - 重置失败计数
 /// - `POST /credentials/:id/refresh` - 强制刷新 Token
 /// - `GET /credentials/:id/balance` - 获取凭据余额
@@ -42,6 +43,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}", delete(delete_credential))
         .route("/credentials/{id}/disabled", post(set_credential_disabled))
         .route("/credentials/{id}/priority", post(set_credential_priority))
+        .route(
+            "/credentials/{id}/rate-limits",
+            put(set_credential_rate_limits),
+        )
         .route("/credentials/{id}/reset", post(reset_failure_count))
         .route("/credentials/{id}/reset-stats", post(reset_success_count))
         .route("/credentials/reset-stats", post(reset_all_success_count))
