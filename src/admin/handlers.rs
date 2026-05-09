@@ -9,8 +9,8 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SetRateLimitsRequest, SuccessResponse,
+        AddCredentialRequest, SetAllowOverageRequest, SetDisabledRequest,
+        SetLoadBalancingModeRequest, SetPriorityRequest, SetRateLimitsRequest, SuccessResponse,
     },
 };
 
@@ -50,6 +50,30 @@ pub async fn set_credential_priority(
             id, payload.priority
         )))
         .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// PUT /api/admin/credentials/:id/allow-overage
+/// 设置凭据超额模式
+pub async fn set_credential_allow_overage(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetAllowOverageRequest>,
+) -> impl IntoResponse {
+    match state.service.set_allow_overage(id, payload.allow_overage) {
+        Ok(_) => {
+            let action = if payload.allow_overage {
+                "开启"
+            } else {
+                "关闭"
+            };
+            Json(SuccessResponse::new(format!(
+                "凭据 #{} 超额模式已{}",
+                id, action
+            )))
+            .into_response()
+        }
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

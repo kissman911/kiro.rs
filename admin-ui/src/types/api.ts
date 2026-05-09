@@ -32,6 +32,7 @@ export interface CredentialStatusItem {
   refreshFailureCount: number
   disabledReason?: string
   endpoint: string
+  allowOverage: boolean
   rateLimits?: RateLimitRule[]
 }
 
@@ -41,8 +42,12 @@ export interface BalanceResponse {
   subscriptionTitle: string | null
   currentUsage: number
   usageLimit: number
+  effectiveLimit: number
+  overageAllowance: number
   remaining: number
   usagePercentage: number
+  allowOverage: boolean
+  overageActive: boolean
   nextResetAt: number | null
 }
 
@@ -73,6 +78,10 @@ export interface SetRateLimitsRequest {
   rateLimits: RateLimitRule[] | null
 }
 
+export interface SetAllowOverageRequest {
+  allowOverage: boolean
+}
+
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
@@ -88,6 +97,7 @@ export interface AddCredentialRequest {
   proxyPassword?: string
   kiroApiKey?: string
   endpoint?: string
+  allowOverage?: boolean
   rateLimits?: RateLimitRule[]
 }
 

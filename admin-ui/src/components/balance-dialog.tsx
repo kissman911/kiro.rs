@@ -73,11 +73,17 @@ export function BalanceDialog({ credentialId, open, onOpenChange }: BalanceDialo
             <div className="space-y-2">
               <div className="flex justify-between text-sm">
                 <span>已使用: ${formatNumber(balance.currentUsage)}</span>
-                <span>限额: ${formatNumber(balance.usageLimit)}</span>
+                <span>
+                  限额: ${formatNumber(balance.usageLimit)}
+                  {balance.allowOverage && (
+                    <span className="text-purple-600"> / 有效 ${formatNumber(balance.effectiveLimit)}</span>
+                  )}
+                </span>
               </div>
               <Progress value={balance.usagePercentage} />
               <div className="text-center text-sm text-muted-foreground">
                 {balance.usagePercentage.toFixed(1)}% 已使用
+                {balance.overageActive && <span className="text-purple-600"> · 正在使用超额额度</span>}
               </div>
             </div>
 
@@ -85,7 +91,7 @@ export function BalanceDialog({ credentialId, open, onOpenChange }: BalanceDialo
             <div className="grid grid-cols-2 gap-4 pt-4 border-t text-sm">
               <div>
                 <span className="text-muted-foreground">剩余额度：</span>
-                <span className="font-medium text-green-600">
+                <span className={`font-medium ${balance.overageActive ? 'text-purple-600' : 'text-green-600'}`}>
                   ${formatNumber(balance.remaining)}
                 </span>
               </div>

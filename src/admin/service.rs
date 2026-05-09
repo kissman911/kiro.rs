@@ -87,6 +87,7 @@ impl AdminService {
                 refresh_failure_count: entry.refresh_failure_count,
                 disabled_reason: entry.disabled_reason,
                 endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+                allow_overage: entry.allow_overage,
                 rate_limits: entry.rate_limits,
             })
             .collect();
@@ -182,20 +183,28 @@ impl AdminService {
 
         let current_usage = usage.current_usage();
         let usage_limit = usage.usage_limit();
-        let remaining = (usage_limit - current_usage).max(0.0);
-        let usage_percentage = if usage_limit > 0.0 {
-            (current_usage / usage_limit * 100.0).min(100.0)
+        let allow_overage = self.token_manager.get_allow_overage(id);
+        let overage_allowance = if allow_overage { 10000.0 } else { 0.0 };
+        let effective_limit = usage_limit + overage_allowance;
+        let remaining = (effective_limit - current_usage).max(0.0);
+        let usage_percentage = if effective_limit > 0.0 {
+            (current_usage / effective_limit * 100.0).min(100.0)
         } else {
             0.0
         };
+        let overage_active = allow_overage && current_usage > usage_limit;
 
         Ok(BalanceResponse {
             id,
             subscription_title: usage.subscription_title().map(|s| s.to_string()),
             current_usage,
             usage_limit,
+            effective_limit,
+            overage_allowance,
             remaining,
             usage_percentage,
+            allow_overage,
+            overage_active,
             next_reset_at: usage.next_date_reset,
         })
     }
@@ -242,6 +251,7 @@ impl AdminService {
             disabled: false, // 新添加的凭据默认启用
             kiro_api_key: req.kiro_api_key,
             endpoint: req.endpoint,
+            allow_overage: req.allow_overage.unwrap_or(false),
             rate_limits: req.rate_limits,
         };
 
@@ -263,6 +273,20 @@ impl AdminService {
             credential_id,
             email,
         })
+    }
+
+    /// 设置凭据超额模式
+    pub fn set_allow_overage(&self, id: u64, allow_overage: bool) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .set_allow_overage(id, allow_overage)
+            .map_err(|e| self.classify_error(e, id))?;
+
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.remove(&id);
+        }
+        self.save_balance_cache();
+        Ok(())
     }
 
     /// 设置凭据级限流规则

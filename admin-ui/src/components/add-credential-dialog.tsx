@@ -33,6 +33,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
   const [endpoint, setEndpoint] = useState('')
+  const [allowOverage, setAllowOverage] = useState(false)
   const [rateLimitWindow, setRateLimitWindow] = useState('')
   const [rateLimitMaxRequests, setRateLimitMaxRequests] = useState('')
 
@@ -52,6 +53,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setProxyUsername('')
     setProxyPassword('')
     setEndpoint('')
+    setAllowOverage(false)
     setRateLimitWindow('')
     setRateLimitMaxRequests('')
   }
@@ -110,6 +112,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         proxyUsername: proxyUsername.trim() || undefined,
         proxyPassword: proxyPassword.trim() || undefined,
         endpoint: endpoint.trim() || undefined,
+        allowOverage: allowOverage || undefined,
         rateLimits,
       },
       {
@@ -297,6 +300,23 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                 可选。决定该凭据走哪套 Kiro API。留空使用全局 defaultEndpoint
               </p>
             </div>
+
+            {/* 超额配置 */}
+            <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={allowOverage}
+                onChange={(e) => setAllowOverage(e.target.checked)}
+                disabled={isPending}
+              />
+              <span>
+                <span className="font-medium">允许超额使用</span>
+                <span className="block text-xs text-muted-foreground">
+                  本地余额展示按原始限额 + 10000 计算。若上游真实返回额度耗尽，仍会禁用该凭据，避免请求死循环。
+                </span>
+              </span>
+            </label>
 
             {/* 限流配置 */}
             <div className="space-y-2">

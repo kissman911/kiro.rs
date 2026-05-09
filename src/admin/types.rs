@@ -64,6 +64,8 @@ pub struct CredentialStatusItem {
     pub disabled_reason: Option<String>,
     /// 端点名称（决定该凭据走哪套 Kiro API，已回退到默认端点）
     pub endpoint: String,
+    /// 是否允许超额使用
+    pub allow_overage: bool,
     /// 凭据级限流规则（未配置时为 None，运行时会回退到全局 defaultRateLimits）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
@@ -94,6 +96,14 @@ pub struct SetRateLimitsRequest {
     /// 新限流规则；传 null 或空数组表示清空凭据级限流并回退到全局默认
     #[serde(default)]
     pub rate_limits: Option<Vec<RateLimitRule>>,
+}
+
+/// 设置凭据超额模式请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAllowOverageRequest {
+    /// 是否允许超额使用
+    pub allow_overage: bool,
 }
 
 /// 添加凭据请求
@@ -152,6 +162,10 @@ pub struct AddCredentialRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
+    /// 是否允许超额使用（可选，默认 false）
+    #[serde(default)]
+    pub allow_overage: Option<bool>,
+
     /// 凭据级限流规则（可选）
     #[serde(default)]
     pub rate_limits: Option<Vec<RateLimitRule>>,
@@ -186,12 +200,20 @@ pub struct BalanceResponse {
     pub subscription_title: Option<String>,
     /// 当前使用量
     pub current_usage: f64,
-    /// 使用限额
+    /// 原始使用限额
     pub usage_limit: f64,
-    /// 剩余额度
+    /// 有效限额（含本地超额额度）
+    pub effective_limit: f64,
+    /// 本地超额额度
+    pub overage_allowance: f64,
+    /// 剩余额度（基于有效限额）
     pub remaining: f64,
-    /// 使用百分比
+    /// 使用百分比（基于有效限额）
     pub usage_percentage: f64,
+    /// 是否允许超额使用
+    pub allow_overage: bool,
+    /// 是否正在使用超额部分
+    pub overage_active: bool,
     /// 下次重置时间（Unix 时间戳）
     pub next_reset_at: Option<f64>,
 }

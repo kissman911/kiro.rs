@@ -19,6 +19,7 @@ import type { CredentialStatusItem, BalanceResponse, RateLimitRule } from '@/typ
 import {
   useSetDisabled,
   useSetPriority,
+  useSetAllowOverage,
   useResetFailure,
   useDeleteCredential,
   useForceRefreshToken,
@@ -71,6 +72,7 @@ export function CredentialCard({
 
   const setDisabled = useSetDisabled()
   const setPriority = useSetPriority()
+  const setAllowOverage = useSetAllowOverage()
   const resetFailure = useResetFailure()
   const deleteCredential = useDeleteCredential()
   const forceRefresh = useForceRefreshToken()
@@ -106,6 +108,16 @@ export function CredentialCard({
         onError: (err) => {
           toast.error('操作失败: ' + (err as Error).message)
         },
+      }
+    )
+  }
+
+  const handleToggleAllowOverage = () => {
+    setAllowOverage.mutate(
+      { id: credential.id, allowOverage: !credential.allowOverage },
+      {
+        onSuccess: (res) => toast.success(res.message),
+        onError: (err) => toast.error('操作失败: ' + (err as Error).message),
       }
     )
   }
@@ -192,6 +204,9 @@ export function CredentialCard({
                 )}
                 {credential.endpoint && (
                   <Badge variant="outline">{credential.endpoint}</Badge>
+                )}
+                {credential.allowOverage && (
+                  <Badge variant="outline" className="text-purple-600 border-purple-300">超额</Badge>
                 )}
               </CardTitle>
             </div>
@@ -299,7 +314,12 @@ export function CredentialCard({
                 </span>
               ) : balance ? (
                 <span className="font-medium ml-1">
-                  {balance.remaining.toFixed(2)} / {balance.usageLimit.toFixed(2)}
+                  {balance.remaining.toFixed(2)} / {balance.effectiveLimit.toFixed(2)}
+                  {balance.allowOverage && (
+                    <span className="text-xs text-purple-600 ml-1">
+                      原限额 {balance.usageLimit.toFixed(2)}，超额 +{balance.overageAllowance.toFixed(0)}
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground ml-1">
                     ({(100 - balance.usagePercentage).toFixed(1)}% 剩余)
                   </span>
@@ -307,6 +327,15 @@ export function CredentialCard({
               ) : (
                 <span className="text-sm text-muted-foreground ml-1">未知</span>
               )}
+            </div>
+            <div className="col-span-2 flex items-center gap-2">
+              <span className="text-muted-foreground">超额模式：</span>
+              <Switch
+                checked={credential.allowOverage}
+                onCheckedChange={handleToggleAllowOverage}
+                disabled={setAllowOverage.isPending}
+              />
+              <span className="text-xs text-muted-foreground">开启后余额按 +10000 计算</span>
             </div>
             <div className="col-span-2">
               <span className="text-muted-foreground">RPM 限流：</span>

@@ -3,6 +3,7 @@ import {
   getCredentials,
   setCredentialDisabled,
   setCredentialPriority,
+  setCredentialAllowOverage,
   setCredentialRateLimits,
   resetCredentialFailure,
   forceRefreshToken,
@@ -55,6 +56,19 @@ export function useSetPriority() {
       setCredentialPriority(id, priority),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 设置凭据超额模式
+export function useSetAllowOverage() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, allowOverage }: { id: number; allowOverage: boolean }) =>
+      setCredentialAllowOverage(id, allowOverage),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['credential-balance', variables.id] })
     },
   })
 }

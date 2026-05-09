@@ -521,6 +521,8 @@ pub struct CredentialEntrySnapshot {
     /// 端点名称（未显式配置时返回 None，由 Admin 层回退到默认值）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// 是否允许超额使用
+    pub allow_overage: bool,
     /// 凭据级限流规则
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
@@ -1333,6 +1335,13 @@ impl MultiTokenManager {
                 return entries.iter().any(|e| !e.disabled);
             }
 
+            if entry.credentials.allow_overage {
+                tracing::warn!(
+                    "凭据 #{} 已开启超额模式，但上游仍返回 MONTHLY_REQUEST_COUNT；为避免死循环，仍禁用该凭据",
+                    id
+                );
+            }
+
             entry.disabled = true;
             entry.disabled_reason = Some(DisabledReason::QuotaExceeded);
             entry.last_used_at = Some(Utc::now().to_rfc3339());
@@ -1569,6 +1578,7 @@ impl MultiTokenManager {
                         .to_string()
                     }),
                     endpoint: e.credentials.endpoint.clone(),
+                    allow_overage: e.credentials.allow_overage,
                     rate_limits: e.credentials.rate_limits.clone(),
                 })
                 .collect(),
@@ -1617,6 +1627,30 @@ impl MultiTokenManager {
         // 立即按新优先级重新选择当前凭据（无论持久化是否成功）
         self.select_highest_priority();
         // 持久化更改
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    /// 获取指定凭据的 allowOverage 设置
+    pub fn get_allow_overage(&self, id: u64) -> bool {
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.credentials.allow_overage)
+            .unwrap_or(false)
+    }
+
+    /// 设置指定凭据的 allowOverage（Admin API）
+    pub fn set_allow_overage(&self, id: u64, allow_overage: bool) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.credentials.allow_overage = allow_overage;
+        }
         self.persist_credentials()?;
         Ok(())
     }
@@ -2598,6 +2632,23 @@ mod tests {
             "错误应提示所有凭据禁用，实际: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_multi_token_manager_get_and_set_allow_overage() {
+        let manager = MultiTokenManager::new(
+            Config::default(),
+            vec![KiroCredentials::default(), KiroCredentials::default()],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert!(!manager.get_allow_overage(1));
+        manager.set_allow_overage(1, true).unwrap();
+        assert!(manager.get_allow_overage(1));
+        assert!(!manager.get_allow_overage(2));
     }
 
     #[test]

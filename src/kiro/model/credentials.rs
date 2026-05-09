@@ -113,6 +113,13 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
+    /// 是否允许超额使用（默认 false）
+    /// 开启后本地有效额度 = usageLimit + 10000。
+    /// 注意：上游如果已经返回 MONTHLY_REQUEST_COUNT，仍以真实上游响应为准。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_false")]
+    pub allow_overage: bool,
+
     /// 凭据级限流规则（可选）
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,6 +129,11 @@ pub struct KiroCredentials {
 /// 判断是否为零（用于跳过序列化）
 fn is_zero(value: &u32) -> bool {
     *value == 0
+}
+
+/// 判断是否为 false（用于跳过序列化）
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn canonicalize_auth_method_value(value: &str) -> &str {
@@ -371,6 +383,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
             rate_limits: None,
         };
 
@@ -490,6 +503,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
             rate_limits: None,
         };
 
@@ -522,6 +536,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
             rate_limits: None,
         };
 
@@ -637,6 +652,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            allow_overage: false,
             rate_limits: None,
         };
 

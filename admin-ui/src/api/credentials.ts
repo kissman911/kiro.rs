@@ -6,6 +6,7 @@ import type {
   SuccessResponse,
   SetDisabledRequest,
   SetPriorityRequest,
+  SetAllowOverageRequest,
   SetRateLimitsRequest,
   AddCredentialRequest,
   AddCredentialResponse,
@@ -55,6 +56,18 @@ export async function setCredentialPriority(
   const { data } = await api.post<SuccessResponse>(
     `/credentials/${id}/priority`,
     { priority } as SetPriorityRequest
+  )
+  return data
+}
+
+// 设置凭据超额模式
+export async function setCredentialAllowOverage(
+  id: number,
+  allowOverage: boolean
+): Promise<SuccessResponse> {
+  const { data } = await api.put<SuccessResponse>(
+    `/credentials/${id}/allow-overage`,
+    { allowOverage } as SetAllowOverageRequest
   )
   return data
 }
