@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +24,7 @@ use crate::kiro::model::token_refresh::{
 };
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
+use crate::model::rate_limit::{RateLimitRule, ResolvedRateLimitRule, resolve_rate_limit_rules};
 
 /// 检查 Token 是否在指定时间内过期
 pub(crate) fn is_token_expiring_within(
@@ -434,6 +435,19 @@ struct CredentialEntry {
     success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）
     last_used_at: Option<String>,
+    /// 运行时限流状态（仅内存）
+    rate_limit_state: CredentialRateLimitState,
+}
+
+#[derive(Default)]
+struct CredentialRateLimitState {
+    request_timestamps: VecDeque<Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RateLimitAvailability {
+    Ready,
+    LimitedUntil(Instant),
 }
 
 /// 禁用原因
@@ -619,6 +633,7 @@ impl MultiTokenManager {
                     },
                     success_count: 0,
                     last_used_at: None,
+                    rate_limit_state: CredentialRateLimitState::default(),
                 }
             })
             .collect();
@@ -714,51 +729,105 @@ impl MultiTokenManager {
     ///
     /// # 参数
     /// - `model`: 可选的模型名称，用于过滤支持该模型的凭据（如 opus 模型需要付费订阅）
-    fn select_next_credential(&self, model: Option<&str>) -> Option<(u64, KiroCredentials)> {
-        let entries = self.entries.lock();
+    fn effective_resolved_rate_limits(
+        credentials: &KiroCredentials,
+        config: &Config,
+    ) -> Vec<ResolvedRateLimitRule> {
+        let effective = credentials.effective_rate_limits(config);
+        resolve_rate_limit_rules(&effective, "effectiveRateLimits").unwrap_or_default()
+    }
 
-        // 检查是否是 opus 模型
+    fn check_rate_limit(
+        state: &mut CredentialRateLimitState,
+        rules: &[ResolvedRateLimitRule],
+        now: Instant,
+    ) -> RateLimitAvailability {
+        if rules.is_empty() {
+            return RateLimitAvailability::Ready;
+        }
+        let max_window = rules.iter().map(|r| r.window_seconds).max().unwrap_or(0);
+        while let Some(front) = state.request_timestamps.front().copied() {
+            if now.duration_since(front).as_secs() >= max_window {
+                state.request_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+        let mut limited_until: Option<Instant> = None;
+        for rule in rules {
+            let in_window: Vec<_> = state
+                .request_timestamps
+                .iter()
+                .copied()
+                .filter(|ts| now.duration_since(*ts).as_secs() < rule.window_seconds)
+                .collect();
+            if in_window.len() as u32 >= rule.max_requests {
+                if let Some(oldest) = in_window.iter().min().copied() {
+                    let next = oldest + StdDuration::from_secs(rule.window_seconds);
+                    limited_until = Some(match limited_until {
+                        Some(current) if current <= next => current,
+                        _ => next,
+                    });
+                }
+            }
+        }
+        limited_until
+            .map(RateLimitAvailability::LimitedUntil)
+            .unwrap_or(RateLimitAvailability::Ready)
+    }
+
+    fn reserve_rate_limit_slot(&self, id: u64, now: Instant) {
+        let config = self.config();
+        let mut entries = self.entries.lock();
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+            let rules = Self::effective_resolved_rate_limits(&entry.credentials, config);
+            let _ = Self::check_rate_limit(&mut entry.rate_limit_state, &rules, now);
+            entry.rate_limit_state.request_timestamps.push_back(now);
+        }
+    }
+
+    fn select_next_credential(&self, model: Option<&str>) -> Option<(u64, KiroCredentials)> {
+        let config = self.config();
+        let now = Instant::now();
+        let mut entries = self.entries.lock();
+
         let is_opus = model
             .map(|m| m.to_lowercase().contains("opus"))
             .unwrap_or(false);
 
-        // 过滤可用凭据
-        let available: Vec<_> = entries
-            .iter()
-            .filter(|e| {
-                if e.disabled {
-                    return false;
-                }
-                // 如果是 opus 模型，需要检查订阅等级
-                if is_opus && !e.credentials.supports_opus() {
-                    return false;
-                }
-                true
-            })
-            .collect();
-
-        if available.is_empty() {
-            return None;
+        let mode = self.load_balancing_mode.lock().clone();
+        let mut available = Vec::new();
+        for entry in entries.iter_mut() {
+            if entry.disabled {
+                continue;
+            }
+            if is_opus && !entry.credentials.supports_opus() {
+                continue;
+            }
+            let rules = Self::effective_resolved_rate_limits(&entry.credentials, config);
+            if matches!(
+                Self::check_rate_limit(&mut entry.rate_limit_state, &rules, now),
+                RateLimitAvailability::Ready
+            ) {
+                available.push((
+                    entry.id,
+                    entry.credentials.clone(),
+                    entry.success_count,
+                    entry.credentials.priority,
+                ));
+            }
         }
 
-        let mode = self.load_balancing_mode.lock().clone();
-        let mode = mode.as_str();
-
-        match mode {
-            "balanced" => {
-                // Least-Used 策略：选择成功次数最少的凭据
-                // 平局时按优先级排序（数字越小优先级越高）
-                let entry = available
-                    .iter()
-                    .min_by_key(|e| (e.success_count, e.credentials.priority))?;
-
-                Some((entry.id, entry.credentials.clone()))
-            }
-            _ => {
-                // priority 模式（默认）：选择优先级最高的
-                let entry = available.iter().min_by_key(|e| e.credentials.priority)?;
-                Some((entry.id, entry.credentials.clone()))
-            }
+        if mode == "balanced" {
+            available
+                .into_iter()
+                .min_by_key(|(_, _, success, priority)| (*success, *priority))
+                .map(|(id, cred, _, _)| (id, cred))
+        } else {
+            available
+                .into_iter()
+                .min_by_key(|(_, _, _, priority)| *priority)
+                .map(|(id, cred, _, _)| (id, cred))
         }
     }
 
@@ -848,6 +917,7 @@ impl MultiTokenManager {
             // 尝试获取/刷新 Token
             match self.try_ensure_token(id, &credentials).await {
                 Ok(ctx) => {
+                    self.reserve_rate_limit_slot(id, Instant::now());
                     return Ok(ctx);
                 }
                 Err(e) => {
@@ -1528,6 +1598,60 @@ impl MultiTokenManager {
         Ok(())
     }
 
+    /// 设置凭据级限流规则（Admin API）
+    fn normalize_optional_rate_limits(
+        rate_limits: Option<Vec<RateLimitRule>>,
+        source: &str,
+    ) -> anyhow::Result<Option<Vec<RateLimitRule>>> {
+        let Some(rate_limits) = rate_limits else {
+            return Ok(None);
+        };
+        if rate_limits.is_empty() {
+            return Ok(None);
+        }
+        let normalized = resolve_rate_limit_rules(&rate_limits, source)?
+            .into_iter()
+            .map(|rule| RateLimitRule {
+                window: rule.window,
+                max_requests: rule.max_requests,
+            })
+            .collect();
+        Ok(Some(normalized))
+    }
+
+    pub fn set_rate_limits(
+        &self,
+        id: u64,
+        rate_limits: Option<Vec<RateLimitRule>>,
+    ) -> anyhow::Result<()> {
+        let normalized =
+            Self::normalize_optional_rate_limits(rate_limits, "credentials.rateLimits")?;
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.credentials.rate_limits = normalized;
+            entry.rate_limit_state = CredentialRateLimitState::default();
+        }
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    pub fn get_default_rate_limits(&self) -> Option<Vec<RateLimitRule>> {
+        self.config().default_rate_limits.clone()
+    }
+
+    pub fn set_default_rate_limits(
+        &self,
+        rate_limits: Option<Vec<RateLimitRule>>,
+    ) -> anyhow::Result<()> {
+        let _normalized =
+            Self::normalize_optional_rate_limits(rate_limits, "config.defaultRateLimits")?;
+        anyhow::bail!("当前运行时不支持热更新全局默认限流，请修改 config.json 后重启")
+    }
+
     /// 重置凭据失败计数并重新启用（Admin API）
     pub fn reset_and_enable(&self, id: u64) -> anyhow::Result<()> {
         {
@@ -1777,6 +1901,7 @@ impl MultiTokenManager {
                 disabled_reason: None,
                 success_count: 0,
                 last_used_at: None,
+                rate_limit_state: CredentialRateLimitState::default(),
             });
         }
 

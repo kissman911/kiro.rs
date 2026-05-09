@@ -235,6 +235,7 @@ impl AdminService {
             disabled: false, // 新添加的凭据默认启用
             kiro_api_key: req.kiro_api_key,
             endpoint: req.endpoint,
+            rate_limits: req.rate_limits,
         };
 
         // 调用 token_manager 添加凭据
@@ -255,6 +256,17 @@ impl AdminService {
             credential_id,
             email,
         })
+    }
+
+    /// 设置凭据级限流规则
+    pub fn set_credential_rate_limits(
+        &self,
+        id: u64,
+        rate_limits: Option<Vec<crate::model::rate_limit::RateLimitRule>>,
+    ) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .set_rate_limits(id, rate_limits)
+            .map_err(|e| self.classify_error(e, id))
     }
 
     /// 删除凭据

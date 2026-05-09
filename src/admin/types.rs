@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::rate_limit::RateLimitRule;
+
 // ============ 凭据状态 ============
 
 /// 所有凭据状态响应
@@ -137,6 +139,10 @@ pub struct AddCredentialRequest {
     /// 端点名称（可选，未配置时使用 config.defaultEndpoint）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// 凭据级限流规则（可选）
+    #[serde(default)]
+    pub rate_limits: Option<Vec<RateLimitRule>>,
 }
 
 fn default_auth_method() -> String {

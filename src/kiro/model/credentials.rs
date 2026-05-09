@@ -9,6 +9,9 @@ use std::path::Path;
 
 use crate::http_client::ProxyConfig;
 use crate::model::config::Config;
+use crate::model::rate_limit::{
+    RateLimitRule, effective_rate_limit_rules, validate_rate_limit_rules,
+};
 
 /// Kiro OAuth 凭证
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -109,6 +112,11 @@ pub struct KiroCredentials {
     /// 端点名必须在启动时注册的端点 registry 中存在。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// 凭据级限流规则（可选）
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limits: Option<Vec<RateLimitRule>>,
 }
 
 /// 判断是否为零（用于跳过序列化）
@@ -162,6 +170,14 @@ impl CredentialsConfig {
         }
 
         let config = serde_json::from_str(&content)?;
+        match &config {
+            CredentialsConfig::Single(cred) => cred.validate("credentials")?,
+            CredentialsConfig::Multiple(creds) => {
+                for (idx, cred) in creds.iter().enumerate() {
+                    cred.validate(&format!("credentials[{idx}]"))?;
+                }
+            }
+        }
         Ok(config)
     }
 
@@ -272,6 +288,18 @@ impl KiroCredentials {
                 .map(|m| m.eq_ignore_ascii_case("api_key") || m.eq_ignore_ascii_case("apikey"))
                 .unwrap_or(false)
     }
+
+    pub fn effective_rate_limits(&self, config: &Config) -> Vec<RateLimitRule> {
+        effective_rate_limit_rules(
+            config.default_rate_limits.as_deref(),
+            self.rate_limits.as_deref(),
+        )
+        .unwrap_or_default()
+    }
+
+    pub fn validate(&self, source: &str) -> anyhow::Result<()> {
+        validate_rate_limit_rules(self.rate_limits.as_deref(), &format!("{source}.rateLimits"))
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +371,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            rate_limits: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -461,6 +490,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            rate_limits: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -492,6 +522,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            rate_limits: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -606,6 +637,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            rate_limits: None,
         };
 
         let json = original.to_pretty_json().unwrap();
