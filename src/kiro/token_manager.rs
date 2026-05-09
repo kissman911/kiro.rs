@@ -862,16 +862,35 @@ impl MultiTokenManager {
                 let is_balanced = self.load_balancing_mode.lock().as_str() == "balanced";
 
                 // balanced 模式：每次请求都重新均衡选择，不固定 current_id
-                // priority 模式：优先使用 current_id 指向的凭据
+                // priority 模式：优先使用 current_id 指向的凭据，但仍必须检查模型能力和限流
                 let current_hit = if is_balanced {
                     None
                 } else {
-                    let entries = self.entries.lock();
+                    let config = self.config();
+                    let now = Instant::now();
+                    let is_opus = model
+                        .map(|m| m.to_lowercase().contains("opus"))
+                        .unwrap_or(false);
+                    let mut entries = self.entries.lock();
                     let current_id = *self.current_id.lock();
                     entries
-                        .iter()
+                        .iter_mut()
                         .find(|e| e.id == current_id && !e.disabled)
-                        .map(|e| (e.id, e.credentials.clone()))
+                        .and_then(|e| {
+                            if is_opus && !e.credentials.supports_opus() {
+                                return None;
+                            }
+                            let rules =
+                                Self::effective_resolved_rate_limits(&e.credentials, config);
+                            if matches!(
+                                Self::check_rate_limit(&mut e.rate_limit_state, &rules, now),
+                                RateLimitAvailability::Ready
+                            ) {
+                                Some((e.id, e.credentials.clone()))
+                            } else {
+                                None
+                            }
+                        })
                 };
 
                 if let Some(hit) = current_hit {
