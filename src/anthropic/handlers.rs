@@ -136,94 +136,94 @@ pub async fn get_models() -> impl IntoResponse {
 
     let models = vec![
         Model {
-            id: "claude-sonnet-4-5-20250929".to_string(),
-            object: "model".to_string(),
-            created: 1727568000,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-5-20250929-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1727568000,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-5-20251101".to_string(),
-            object: "model".to_string(),
-            created: 1730419200,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.5".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-opus-4-5-20251101-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1730419200,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.5 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-6".to_string(),
-            object: "model".to_string(),
-            created: 1770314400,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.6".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
-            id: "claude-sonnet-4-6-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1770314400,
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Sonnet 4.6 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 32000,
-        },
-        Model {
             id: "claude-opus-4-6".to_string(),
             object: "model".to_string(),
-            created: 1770314400,
+            created: 1770163200, // Feb 4, 2026
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.6".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 32000,
+            max_tokens: 64000,
         },
         Model {
             id: "claude-opus-4-6-thinking".to_string(),
             object: "model".to_string(),
-            created: 1770314400,
+            created: 1770163200, // Feb 4, 2026
             owned_by: "anthropic".to_string(),
             display_name: "Claude Opus 4.6 (Thinking)".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 32000,
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-sonnet-4-6".to_string(),
+            object: "model".to_string(),
+            created: 1771286400, // Feb 17, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Sonnet 4.6".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-sonnet-4-6-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1771286400, // Feb 17, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Sonnet 4.6 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-opus-4-5-20251101".to_string(),
+            object: "model".to_string(),
+            created: 1763942400, // Nov 24, 2025
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 4.5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-opus-4-5-20251101-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1763942400, // Nov 24, 2025
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 4.5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-sonnet-4-5-20250929".to_string(),
+            object: "model".to_string(),
+            created: 1759104000, // Sep 29, 2025
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Sonnet 4.5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
+        },
+        Model {
+            id: "claude-sonnet-4-5-20250929-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1759104000, // Sep 29, 2025
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Sonnet 4.5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 64000,
         },
         Model {
             id: "claude-haiku-4-5-20251001".to_string(),
             object: "model".to_string(),
-            created: 1727740800,
+            created: 1760486400, // Oct 15, 2025
             owned_by: "anthropic".to_string(),
             display_name: "Claude Haiku 4.5".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 32000,
+            max_tokens: 64000,
         },
         Model {
             id: "claude-haiku-4-5-20251001-thinking".to_string(),
             object: "model".to_string(),
-            created: 1727740800,
+            created: 1760486400, // Oct 15, 2025
             owned_by: "anthropic".to_string(),
             display_name: "Claude Haiku 4.5 (Thinking)".to_string(),
             model_type: "chat".to_string(),
-            max_tokens: 32000,
+            max_tokens: 64000,
         },
     ];
 
@@ -302,6 +302,7 @@ pub async fn post_messages(
         }
     };
 
+    let tool_name_map = conversion_result.tool_name_map.clone();
     let (_kiro_request, _request_plan, request_body) =
         match build_request_body_and_plan(&state, &payload, conversion_result) {
             Ok(result) => result,
@@ -326,45 +327,46 @@ pub async fn post_messages(
         .unwrap_or(false);
 
     if payload.stream {
+        let input = StreamExecutionInput {
+            request_body: &request_body,
+            model: &payload.model,
+            input_tokens,
+            thinking_enabled,
+            stream_mode: StreamMode::Direct,
+            tool_name_map,
+        };
         if state.native_like_two_phase_flow {
-            let executor = TwoPhaseExecutor::new(provider.clone());
-            executor
-                .execute_stream(
-                    &_request_plan,
-                    StreamExecutionInput {
-                        request_body: &request_body,
-                        model: &payload.model,
-                        input_tokens,
-                        thinking_enabled,
-                        stream_mode: StreamMode::Direct,
-                    },
-                )
+            TwoPhaseExecutor::new(provider.clone())
+                .execute_stream(&_request_plan, input)
                 .await
         } else {
-            let executor = SinglePhaseExecutor::new(provider.clone());
-            executor
-                .execute_stream(
-                    &_request_plan,
-                    StreamExecutionInput {
-                        request_body: &request_body,
-                        model: &payload.model,
-                        input_tokens,
-                        thinking_enabled,
-                        stream_mode: StreamMode::Direct,
-                    },
-                )
+            SinglePhaseExecutor::new(provider.clone())
+                .execute_stream(&_request_plan, input)
                 .await
         }
     } else {
+        let extract_thinking = state.extract_thinking && thinking_enabled;
         if state.native_like_two_phase_flow {
-            let executor = TwoPhaseExecutor::new(provider.clone());
-            executor
-                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+            TwoPhaseExecutor::new(provider.clone())
+                .execute_non_stream(
+                    &_request_plan,
+                    &request_body,
+                    &payload.model,
+                    input_tokens,
+                    extract_thinking,
+                    tool_name_map,
+                )
                 .await
         } else {
-            let executor = SinglePhaseExecutor::new(provider.clone());
-            executor
-                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+            SinglePhaseExecutor::new(provider.clone())
+                .execute_non_stream(
+                    &_request_plan,
+                    &request_body,
+                    &payload.model,
+                    input_tokens,
+                    extract_thinking,
+                    tool_name_map,
+                )
                 .await
         }
     }
@@ -377,6 +379,7 @@ async fn handle_stream_request(
     model: &str,
     input_tokens: i32,
     thinking_enabled: bool,
+    tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body).await {
@@ -385,7 +388,8 @@ async fn handle_stream_request(
     };
 
     // 创建流处理上下文
-    let mut ctx = StreamContext::new_with_thinking(model, input_tokens, thinking_enabled);
+    let mut ctx =
+        StreamContext::new_with_thinking(model, input_tokens, thinking_enabled, tool_name_map);
 
     // 生成初始事件
     let initial_events = ctx.generate_initial_events();
@@ -510,6 +514,8 @@ pub(crate) async fn build_non_stream_response_from_upstream(
     response: reqwest::Response,
     model: &str,
     input_tokens: i32,
+    thinking_enabled: bool,
+    tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
     // 读取响应体
     let body_bytes = match response.bytes().await {
@@ -576,10 +582,15 @@ pub(crate) async fn build_non_stream_response_from_upstream(
                                     })
                                 };
 
+                                let original_name = tool_name_map
+                                    .get(&tool_use.name)
+                                    .cloned()
+                                    .unwrap_or_else(|| tool_use.name.clone());
+
                                 tool_uses.push(json!({
                                     "type": "tool_use",
                                     "id": tool_use.tool_use_id,
-                                    "name": tool_use.name,
+                                    "name": original_name,
                                     "input": input
                                 }));
                             }
@@ -624,7 +635,25 @@ pub(crate) async fn build_non_stream_response_from_upstream(
     // 构建响应内容
     let mut content: Vec<serde_json::Value> = Vec::new();
 
-    if !text_content.is_empty() {
+    if thinking_enabled {
+        // 从完整文本中提取 thinking 块
+        let (thinking, remaining_text) =
+            super::stream::extract_thinking_from_complete_text(&text_content);
+
+        if let Some(thinking_text) = thinking {
+            content.push(json!({
+                "type": "thinking",
+                "thinking": thinking_text
+            }));
+        }
+
+        if !remaining_text.is_empty() {
+            content.push(json!({
+                "type": "text",
+                "text": remaining_text
+            }));
+        }
+    } else if !text_content.is_empty() {
         content.push(json!({
             "type": "text",
             "text": text_content
@@ -663,13 +692,22 @@ pub(crate) async fn handle_non_stream_request(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    thinking_enabled: bool,
+    tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
     let response = match provider.call_api(request_body).await {
         Ok(resp) => resp,
         Err(e) => return map_provider_error(e),
     };
 
-    build_non_stream_response_from_upstream(response, model, input_tokens).await
+    build_non_stream_response_from_upstream(
+        response,
+        model,
+        input_tokens,
+        thinking_enabled,
+        tool_name_map,
+    )
+    .await
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -802,6 +840,7 @@ pub async fn post_messages_cc(
         }
     };
 
+    let tool_name_map = conversion_result.tool_name_map.clone();
     let (_kiro_request, _request_plan, request_body) =
         match build_request_body_and_plan(&state, &payload, conversion_result) {
             Ok(result) => result,
@@ -826,45 +865,46 @@ pub async fn post_messages_cc(
         .unwrap_or(false);
 
     if payload.stream {
+        let input = StreamExecutionInput {
+            request_body: &request_body,
+            model: &payload.model,
+            input_tokens,
+            thinking_enabled,
+            stream_mode: StreamMode::Buffered,
+            tool_name_map,
+        };
         if state.native_like_two_phase_flow {
-            let executor = TwoPhaseExecutor::new(provider.clone());
-            executor
-                .execute_stream(
-                    &_request_plan,
-                    StreamExecutionInput {
-                        request_body: &request_body,
-                        model: &payload.model,
-                        input_tokens,
-                        thinking_enabled,
-                        stream_mode: StreamMode::Buffered,
-                    },
-                )
+            TwoPhaseExecutor::new(provider.clone())
+                .execute_stream(&_request_plan, input)
                 .await
         } else {
-            let executor = SinglePhaseExecutor::new(provider.clone());
-            executor
-                .execute_stream(
-                    &_request_plan,
-                    StreamExecutionInput {
-                        request_body: &request_body,
-                        model: &payload.model,
-                        input_tokens,
-                        thinking_enabled,
-                        stream_mode: StreamMode::Buffered,
-                    },
-                )
+            SinglePhaseExecutor::new(provider.clone())
+                .execute_stream(&_request_plan, input)
                 .await
         }
     } else {
+        let extract_thinking = state.extract_thinking && thinking_enabled;
         if state.native_like_two_phase_flow {
-            let executor = TwoPhaseExecutor::new(provider.clone());
-            executor
-                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+            TwoPhaseExecutor::new(provider.clone())
+                .execute_non_stream(
+                    &_request_plan,
+                    &request_body,
+                    &payload.model,
+                    input_tokens,
+                    extract_thinking,
+                    tool_name_map,
+                )
                 .await
         } else {
-            let executor = SinglePhaseExecutor::new(provider.clone());
-            executor
-                .execute_non_stream(&_request_plan, &request_body, &payload.model, input_tokens)
+            SinglePhaseExecutor::new(provider.clone())
+                .execute_non_stream(
+                    &_request_plan,
+                    &request_body,
+                    &payload.model,
+                    input_tokens,
+                    extract_thinking,
+                    tool_name_map,
+                )
                 .await
         }
     }
@@ -880,6 +920,7 @@ async fn handle_stream_request_buffered(
     model: &str,
     estimated_input_tokens: i32,
     thinking_enabled: bool,
+    tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let response = match provider.call_api_stream(request_body).await {
@@ -888,7 +929,12 @@ async fn handle_stream_request_buffered(
     };
 
     // 创建缓冲流处理上下文
-    let ctx = BufferedStreamContext::new(model, estimated_input_tokens, thinking_enabled);
+    let ctx = BufferedStreamContext::new(
+        model,
+        estimated_input_tokens,
+        thinking_enabled,
+        tool_name_map,
+    );
 
     // 创建缓冲 SSE 流
     let stream = create_buffered_sse_stream(response, ctx);

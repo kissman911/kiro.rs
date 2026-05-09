@@ -3,7 +3,7 @@
 //! 当前只实现单阶段执行器，保持现有兼容行为。
 //! 后续 two-phase/native-like 流程可在此基础上扩展。
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     body::Body,
@@ -31,6 +31,7 @@ pub struct StreamExecutionInput<'a> {
     pub input_tokens: i32,
     pub thinking_enabled: bool,
     pub stream_mode: StreamMode,
+    pub tool_name_map: HashMap<String, String>,
 }
 
 pub struct SinglePhaseExecutor {
@@ -80,6 +81,7 @@ impl SinglePhaseExecutor {
                     input.model,
                     input.input_tokens,
                     input.thinking_enabled,
+                    input.tool_name_map,
                 );
                 let initial_events = ctx.generate_initial_events();
                 Body::from_stream(create_sse_stream(response, ctx, initial_events))
@@ -89,6 +91,7 @@ impl SinglePhaseExecutor {
                     input.model,
                     input.input_tokens,
                     input.thinking_enabled,
+                    input.tool_name_map,
                 );
                 Body::from_stream(create_buffered_sse_stream(response, ctx))
             }
@@ -109,6 +112,8 @@ impl SinglePhaseExecutor {
         request_body: &str,
         model: &str,
         input_tokens: i32,
+        thinking_enabled: bool,
+        tool_name_map: HashMap<String, String>,
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
         let call_ctx = match self
@@ -133,7 +138,14 @@ impl SinglePhaseExecutor {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
-        build_non_stream_response_from_upstream(response, model, input_tokens).await
+        build_non_stream_response_from_upstream(
+            response,
+            model,
+            input_tokens,
+            thinking_enabled,
+            tool_name_map,
+        )
+        .await
     }
 }
 
@@ -231,6 +243,7 @@ impl TwoPhaseExecutor {
                     input.model,
                     input.input_tokens,
                     input.thinking_enabled,
+                    input.tool_name_map,
                 );
                 let initial_events = ctx.generate_initial_events();
                 Body::from_stream(create_sse_stream(response, ctx, initial_events))
@@ -240,6 +253,7 @@ impl TwoPhaseExecutor {
                     input.model,
                     input.input_tokens,
                     input.thinking_enabled,
+                    input.tool_name_map,
                 );
                 Body::from_stream(create_buffered_sse_stream(response, ctx))
             }
@@ -260,6 +274,8 @@ impl TwoPhaseExecutor {
         request_body: &str,
         model: &str,
         input_tokens: i32,
+        thinking_enabled: bool,
+        tool_name_map: HashMap<String, String>,
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::TwoPhaseNativeLike));
 
@@ -333,7 +349,14 @@ impl TwoPhaseExecutor {
             Err(e) => return map_provider_error(e),
         };
 
-        build_non_stream_response_from_upstream(response, model, input_tokens).await
+        build_non_stream_response_from_upstream(
+            response,
+            model,
+            input_tokens,
+            thinking_enabled,
+            tool_name_map,
+        )
+        .await
     }
 }
 
