@@ -14,6 +14,7 @@ import {
   setLoadBalancingMode,
   resetSuccessCount,
   resetAllSuccessCount,
+  getVersionInfo,
 } from '@/api/credentials'
 import type { AddCredentialRequest, RateLimitRule } from '@/types/api'
 
@@ -167,5 +168,14 @@ export function useSetLoadBalancingMode() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
     },
+  })
+}
+
+// 获取 KissAPI 二次开发版本信息
+export function useVersionInfo() {
+  return useQuery({
+    queryKey: ['versionInfo'],
+    queryFn: getVersionInfo,
+    staleTime: 5 * 60 * 1000,
   })
 }

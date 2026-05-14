@@ -11,8 +11,26 @@ use super::{
     types::{
         AddCredentialRequest, SetAllowOverageRequest, SetDisabledRequest,
         SetLoadBalancingModeRequest, SetPriorityRequest, SetRateLimitsRequest, SuccessResponse,
+        VersionInfoResponse,
     },
 };
+
+/// GET /api/admin/version
+/// 获取 KissAPI 二次开发版本信息
+pub async fn get_version_info() -> impl IntoResponse {
+    let info = crate::version::app_version_info();
+    Json(VersionInfoResponse {
+        version: info.version,
+        channel: info.channel,
+        codename: info.codename,
+        date: info.date,
+        summary: info.summary,
+        package_version: info.package_version,
+        git_sha: info.git_sha,
+        build_tag: info.build_tag,
+        changelog: info.changelog,
+    })
+}
 
 /// GET /api/admin/credentials
 /// 获取所有凭据状态

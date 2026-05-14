@@ -1,3 +1,16 @@
+// 版本信息响应
+export interface VersionInfoResponse {
+  version: string
+  channel: string
+  codename: string
+  date: string
+  summary: string
+  packageVersion: string
+  gitSha: string
+  buildTag: string
+  changelog: string
+}
+
 // 凭据状态响应
 export interface CredentialsStatusResponse {
   total: number

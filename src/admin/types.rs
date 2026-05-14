@@ -4,6 +4,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::rate_limit::RateLimitRule;
 
+// ============ 版本信息 ============
+
+/// KissAPI 二次开发版本信息响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionInfoResponse {
+    pub version: String,
+    pub channel: String,
+    pub codename: String,
+    pub date: String,
+    pub summary: String,
+    pub package_version: String,
+    pub git_sha: String,
+    pub build_tag: String,
+    pub changelog: String,
+}
+
 // ============ 凭据状态 ============
 
 /// 所有凭据状态响应

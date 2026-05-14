@@ -11,6 +11,7 @@ import type {
   AddCredentialRequest,
   AddCredentialResponse,
   RateLimitRule,
+  VersionInfoResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -141,5 +142,11 @@ export async function getLoadBalancingMode(): Promise<{ mode: 'priority' | 'bala
 // 设置负载均衡模式
 export async function setLoadBalancingMode(mode: 'priority' | 'balanced'): Promise<{ mode: 'priority' | 'balanced' }> {
   const { data } = await api.put<{ mode: 'priority' | 'balanced' }>('/config/load-balancing', { mode })
+  return data
+}
+
+// 获取版本信息
+export async function getVersionInfo(): Promise<VersionInfoResponse> {
+  const { data } = await api.get<VersionInfoResponse>('/version')
   return data
 }

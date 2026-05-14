@@ -1044,8 +1044,14 @@ mod tests {
 
     #[test]
     fn test_map_model_opus_4_7() {
-        assert_eq!(map_model("claude-opus-4-7"), Some("claude-opus-4.7".to_string()));
-        assert_eq!(map_model("claude-opus-4.7"), Some("claude-opus-4.7".to_string()));
+        assert_eq!(
+            map_model("claude-opus-4-7"),
+            Some("claude-opus-4.7".to_string())
+        );
+        assert_eq!(
+            map_model("claude-opus-4.7"),
+            Some("claude-opus-4.7".to_string())
+        );
     }
 
     #[test]

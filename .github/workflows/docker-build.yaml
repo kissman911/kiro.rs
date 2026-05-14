@@ -101,6 +101,9 @@ jobs:
           cache-to: type=gha,mode=max
           push: true
           provenance: false
+          build-args: |
+            KISSAPI_BUILD_TAG=${{ steps.version.outputs.version }}
+            KISSAPI_GIT_SHA=${{ github.sha }}
           tags: ghcr.io/${{ steps.owner.outputs.name }}/kiro-rs:${{ steps.version.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}

@@ -3,7 +3,7 @@
 //! 负责 Token 过期检测和刷新，支持 Social 和 IdC 认证方式
 //! 支持多凭据 (MultiTokenManager) 管理
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -396,7 +396,10 @@ async fn resolve_profile_arn(
             continue;
         }
 
-        let payload: Value = response.json().await.context("解析 Kiro profile 列表失败")?;
+        let payload: Value = response
+            .json()
+            .await
+            .context("解析 Kiro profile 列表失败")?;
         if let Some(arn) = payload
             .get("profiles")
             .and_then(|v| v.as_array())

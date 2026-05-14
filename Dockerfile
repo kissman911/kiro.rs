@@ -10,10 +10,16 @@ RUN pnpm build
 
 FROM rust:1.92-alpine AS builder
 
+ARG KISSAPI_BUILD_TAG=local
+ARG KISSAPI_GIT_SHA=unknown
+ENV KISSAPI_BUILD_TAG=${KISSAPI_BUILD_TAG}
+ENV KISSAPI_GIT_SHA=${KISSAPI_GIT_SHA}
+
 RUN apk add --no-cache musl-dev perl make
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml Cargo.lock* build.rs VERSION.json ./
+COPY docs ./docs
 COPY src ./src
 COPY --from=frontend-builder /app/admin-ui/dist /app/admin-ui/dist
 

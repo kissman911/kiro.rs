@@ -8,7 +8,7 @@ use axum::{
 use super::{
     handlers::{
         add_credential, delete_credential, force_refresh_token, get_all_credentials,
-        get_credential_balance, get_load_balancing_mode, reset_all_success_count,
+        get_credential_balance, get_load_balancing_mode, get_version_info, reset_all_success_count,
         reset_failure_count, reset_success_count, set_credential_allow_overage,
         set_credential_disabled, set_credential_priority, set_credential_rate_limits,
         set_load_balancing_mode,
@@ -38,6 +38,7 @@ use super::{
 /// - `Authorization: Bearer <token>` header
 pub fn create_admin_router(state: AdminState) -> Router {
     Router::new()
+        .route("/version", get(get_version_info))
         .route(
             "/credentials",
             get(get_all_credentials).post(add_credential),

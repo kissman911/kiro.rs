@@ -1,0 +1,7 @@
+{
+  "version": "2026.5.14-kiss.2",
+  "channel": "kissapi",
+  "codename": "version-badge",
+  "date": "2026-05-14",
+  "summary": "Add KissAPI custom version tracking, changelog metadata, Admin API version endpoint, and Admin UI version badge."
+}
