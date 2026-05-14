@@ -994,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn test_map_model_opus_4_7() {
+    fn test_map_model_opus_4_7_dated() {
         let result = map_model("claude-opus-4-7-20260501");
         assert_eq!(result, Some("claude-opus-4.7".to_string()));
     }
