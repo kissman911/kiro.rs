@@ -3,10 +3,11 @@
 //! 负责 Token 过期检测和刷新，支持 Social 和 IdC 认证方式
 //! 支持多凭据 (MultiTokenManager) 管理
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex as TokioMutex;
 
@@ -320,12 +321,102 @@ async fn refresh_idc_token(
         new_credentials.expires_at = Some(expires_at.to_rfc3339());
     }
 
-    // 同步更新 profile_arn（如果 IdC 响应中包含）
+    // 同步更新 profile_arn（如果 IdC 响应中包含）；新 Kiro runtime 对 IdC 请求强制要求 profileArn，
+    // 但 OIDC token 响应通常不返回该字段，因此需要从 management/ListAvailableProfiles 补齐。
     if let Some(profile_arn) = data.profile_arn {
         new_credentials.profile_arn = Some(profile_arn);
     }
 
+    if new_credentials.profile_arn.is_none() {
+        if let Some(profile_arn) = resolve_profile_arn(&new_credentials, config, proxy).await? {
+            new_credentials.profile_arn = Some(profile_arn);
+        }
+    }
+
     Ok(new_credentials)
+}
+
+/// 从 Kiro management/ListAvailableProfiles 解析当前凭据可用的 Profile ARN。
+///
+/// IdC / Builder-ID 凭据的 refresh 响应不稳定返回 profileArn；旧端点可缺省，
+/// 但 runtime.<region>.kiro.dev 会直接拒绝缺 profileArn 的请求。
+async fn resolve_profile_arn(
+    credentials: &KiroCredentials,
+    config: &Config,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<Option<String>> {
+    let Some(token) = credentials.access_token.as_deref() else {
+        return Ok(None);
+    };
+
+    let client = build_client(proxy, 60, config.tls_backend)?;
+    let machine_id = machine_id::generate_from_credentials(credentials, config);
+    let kiro_version = &config.kiro_version;
+    let sdk_version = "1.0.0";
+    let os_name = config.normalized_system_version();
+    let node_version = &config.node_version;
+    let user_agent = format!(
+        "aws-sdk-js/{} ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#{} KiroIDE-{}-{}",
+        sdk_version, os_name, node_version, sdk_version, kiro_version, machine_id
+    );
+    let amz_user_agent = format!(
+        "aws-sdk-js/{} KiroIDE-{}-{}",
+        sdk_version, kiro_version, machine_id
+    );
+
+    let mut regions = vec![credentials.effective_api_region(config).to_string()];
+    let auth_region = credentials.effective_auth_region(config).to_string();
+    if !regions.iter().any(|r| r == &auth_region) {
+        regions.push(auth_region);
+    }
+
+    for region in regions {
+        let host = format!("management.{}.kiro.dev", region);
+        let url = format!("https://{}/ListAvailableProfiles", host);
+        let response = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header("x-amz-user-agent", &amz_user_agent)
+            .header("user-agent", &user_agent)
+            .header("host", &host)
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Connection", "close")
+            .json(&serde_json::json!({ "nextToken": null }))
+            .send()
+            .await
+            .with_context(|| format!("请求 Kiro profile 列表失败: {}", host))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            tracing::warn!("查询 Kiro profile 列表失败 {}: {}", status, body);
+            continue;
+        }
+
+        let payload: Value = response.json().await.context("解析 Kiro profile 列表失败")?;
+        if let Some(arn) = payload
+            .get("profiles")
+            .and_then(|v| v.as_array())
+            .and_then(|profiles| {
+                profiles.iter().find_map(|profile| {
+                    profile
+                        .get("arn")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(ToString::to_string)
+                })
+            })
+        {
+            tracing::info!("已解析 Kiro profileArn: {}", arn);
+            return Ok(Some(arn));
+        }
+    }
+
+    Ok(None)
 }
 
 /// getUsageLimits API 所需的 x-amz-user-agent header 前缀
