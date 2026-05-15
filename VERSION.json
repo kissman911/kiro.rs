@@ -1,7 +1,7 @@
 {
-  "version": "2026.5.14-kiss.2",
+  "version": "2026.5.15-kiss.1",
   "channel": "kissapi",
-  "codename": "version-badge",
-  "date": "2026-05-14",
-  "summary": "Add KissAPI custom version tracking, changelog metadata, Admin API version endpoint, and Admin UI version badge."
+  "codename": "overage-autodisable",
+  "date": "2026-05-15",
+  "summary": "Automatically disable the active credential when Kiro reports the overage limit has been reached."
 }
