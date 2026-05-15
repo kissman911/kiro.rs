@@ -70,11 +70,17 @@ pub struct RequestContext<'a> {
     pub config: &'a Config,
 }
 
-/// 默认的 MONTHLY_REQUEST_COUNT 判断逻辑
+/// 默认的额度用尽判断逻辑
 ///
-/// 同时识别顶层 `reason` 字段和嵌套 `error.reason` 字段。
+/// 同时识别：
+/// - 旧版月度请求数耗尽：`MONTHLY_REQUEST_COUNT`
+/// - 超额额度耗尽：`OVERAGE_REQUEST...` / `You have reached the limit for overages`
+/// - 顶层 `reason` 字段和嵌套 `error.reason` 字段。
 pub fn default_is_monthly_request_limit(body: &str) -> bool {
-    if body.contains("MONTHLY_REQUEST_COUNT") {
+    if body.contains("MONTHLY_REQUEST_COUNT")
+        || body.contains("OVERAGE_REQUEST")
+        || body.contains("You have reached the limit for overages")
+    {
         return true;
     }
 
@@ -82,18 +88,34 @@ pub fn default_is_monthly_request_limit(body: &str) -> bool {
         return false;
     };
 
+    fn is_quota_reason(reason: &str) -> bool {
+        reason == "MONTHLY_REQUEST_COUNT" || reason.starts_with("OVERAGE_REQUEST")
+    }
+
     if value
         .get("reason")
         .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
+        .is_some_and(is_quota_reason)
+    {
+        return true;
+    }
+
+    if value
+        .pointer("/error/reason")
+        .and_then(|v| v.as_str())
+        .is_some_and(is_quota_reason)
     {
         return true;
     }
 
     value
-        .pointer("/error/reason")
+        .get("message")
         .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
+        .is_some_and(|v| v.contains("You have reached the limit for overages"))
+        || value
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| v.contains("You have reached the limit for overages"))
 }
 
 /// 默认的 bearer token 失效判断逻辑
@@ -114,6 +136,24 @@ mod tests {
     #[test]
     fn test_default_monthly_request_limit_nested_reason() {
         let body = r#"{"error":{"reason":"MONTHLY_REQUEST_COUNT"}}"#;
+        assert!(default_is_monthly_request_limit(body));
+    }
+
+    #[test]
+    fn test_default_monthly_request_limit_detects_nested_overage_reason() {
+        let body = r#"{"error":{"message":"You have reached the limit for overages.","reason":"OVERAGE_REQUEST_LIMIT"}}"#;
+        assert!(default_is_monthly_request_limit(body));
+    }
+
+    #[test]
+    fn test_default_monthly_request_limit_detects_plain_overage_message() {
+        let body = r#"{"message":"You have reached the limit for overages.","reason":"OVERAGE_REQUEST_COUNT"}"#;
+        assert!(default_is_monthly_request_limit(body));
+    }
+
+    #[test]
+    fn test_default_monthly_request_limit_detects_wrapped_overage_error() {
+        let body = "status_code=502, 上游 API 调用失败: 流式 API 请求失败: 402 Payment Required {\"message\":\"You have reached the limit for overages.\",\"reason\":\"OVERAGE_REQUEST_LIMIT\"}";
         assert!(default_is_monthly_request_limit(body));
     }
 

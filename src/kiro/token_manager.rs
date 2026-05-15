@@ -553,7 +553,7 @@ enum DisabledReason {
     TooManyFailures,
     /// Token 刷新连续失败达到阈值后自动禁用
     TooManyRefreshFailures,
-    /// 额度已用尽（如 MONTHLY_REQUEST_COUNT）
+    /// 额度已用尽（如 MONTHLY_REQUEST_COUNT / OVERAGE_REQUEST_LIMIT）
     QuotaExceeded,
     /// Refresh Token 永久失效（服务端返回 invalid_grant）
     InvalidRefreshToken,
@@ -1411,7 +1411,7 @@ impl MultiTokenManager {
 
     /// 报告指定凭据额度已用尽
     ///
-    /// 用于处理 402 Payment Required 且 reason 为 `MONTHLY_REQUEST_COUNT` 的场景：
+    /// 用于处理 402 Payment Required 且 reason 为 `MONTHLY_REQUEST_COUNT` 或 `OVERAGE_REQUEST...` 的场景：
     /// - 立即禁用该凭据（不等待连续失败阈值）
     /// - 切换到下一个可用凭据继续重试
     /// - 返回是否还有可用凭据
@@ -1431,7 +1431,7 @@ impl MultiTokenManager {
 
             if entry.credentials.allow_overage {
                 tracing::warn!(
-                    "凭据 #{} 已开启超额模式，但上游仍返回 MONTHLY_REQUEST_COUNT；为避免死循环，仍禁用该凭据",
+                    "凭据 #{} 已开启超额模式，但上游仍返回额度/超额耗尽；为避免死循环，仍禁用该凭据",
                     id
                 );
             }
@@ -1442,7 +1442,7 @@ impl MultiTokenManager {
             // 设为阈值，便于在管理面板中直观看到该凭据已不可用
             entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
 
-            tracing::error!("凭据 #{} 额度已用尽（MONTHLY_REQUEST_COUNT），已被禁用", id);
+            tracing::error!("凭据 #{} 额度或超额额度已用尽，已被禁用", id);
 
             // 切换到优先级最高的可用凭据
             if let Some(next) = entries
