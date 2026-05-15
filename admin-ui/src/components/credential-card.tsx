@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge } from 'lucide-react'
+import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge, Mail } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -173,6 +173,8 @@ export function CredentialCard({
     })
   }
 
+  const credentialOwner = credential.email?.trim() || '未识别邮箱'
+
   return (
     <>
       <Card className={credential.isCurrent ? 'ring-2 ring-primary' : ''}>
@@ -184,7 +186,9 @@ export function CredentialCard({
                 onCheckedChange={onToggleSelect}
               />
               <CardTitle className="text-lg flex items-center gap-2">
-                {credential.email || `凭据 #${credential.id}`}
+                <span className={credential.email ? '' : 'text-muted-foreground'}>
+                  {credential.email || `凭据 #${credential.id}`}
+                </span>
                 {credential.isCurrent && (
                   <Badge variant="success">当前</Badge>
                 )}
@@ -223,6 +227,18 @@ export function CredentialCard({
         <CardContent className="space-y-4">
           {/* 信息网格 */}
           <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="col-span-2 flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+              <Mail className="h-4 w-4 text-muted-foreground" />
+              <span className="text-muted-foreground">邮箱 / 归属：</span>
+              <span className={credential.email ? 'font-mono font-medium' : 'text-muted-foreground'}>
+                {credentialOwner}
+              </span>
+              {!credential.email && (
+                <span className="text-xs text-muted-foreground">
+                  可通过 KAM 导入带 email 的凭据，或点击“刷新 Token”尝试自动识别
+                </span>
+              )}
+            </div>
             <div>
               <span className="text-muted-foreground">优先级：</span>
               {editingPriority ? (

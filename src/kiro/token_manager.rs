@@ -178,9 +178,8 @@ async fn refresh_social_token(
         .await?;
 
     let status = response.status();
+    let body_text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-
         // 400 + invalid_grant + Invalid refresh token provided → refreshToken 永久失效
         if status.as_u16() == 400
             && body_text.contains("\"invalid_grant\"")
@@ -202,10 +201,14 @@ async fn refresh_social_token(
         bail!("{}: {} {}", error_msg, status, body_text);
     }
 
-    let data: RefreshResponse = response.json().await?;
+    let data: RefreshResponse =
+        serde_json::from_str(&body_text).context("解析 Social refreshToken 响应失败")?;
 
     let mut new_credentials = credentials.clone();
     new_credentials.access_token = Some(data.access_token);
+    if new_credentials.email.as_deref().is_none_or(str::is_empty) {
+        new_credentials.email = extract_email_from_json_text(&body_text);
+    }
 
     if let Some(new_refresh_token) = data.refresh_token {
         new_credentials.refresh_token = Some(new_refresh_token);
@@ -213,6 +216,16 @@ async fn refresh_social_token(
 
     if let Some(profile_arn) = data.profile_arn {
         new_credentials.profile_arn = Some(profile_arn);
+    }
+
+    let profile_metadata = resolve_profile_metadata(&new_credentials, config, proxy).await?;
+    if new_credentials.profile_arn.is_none() {
+        if let Some(profile_arn) = profile_metadata.profile_arn {
+            new_credentials.profile_arn = Some(profile_arn);
+        }
+    }
+    if new_credentials.email.as_deref().is_none_or(str::is_empty) {
+        new_credentials.email = profile_metadata.email;
     }
 
     if let Some(expires_in) = data.expires_in {
@@ -283,9 +296,8 @@ async fn refresh_idc_token(
         .await?;
 
     let status = response.status();
+    let body_text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-
         // 400 + invalid_grant + Invalid refresh token provided → refreshToken 永久失效
         if status.as_u16() == 400
             && body_text.contains("\"invalid_grant\"")
@@ -307,10 +319,14 @@ async fn refresh_idc_token(
         bail!("{}: {} {}", error_msg, status, body_text);
     }
 
-    let data: IdcRefreshResponse = response.json().await?;
+    let data: IdcRefreshResponse =
+        serde_json::from_str(&body_text).context("解析 IdC refreshToken 响应失败")?;
 
     let mut new_credentials = credentials.clone();
     new_credentials.access_token = Some(data.access_token);
+    if new_credentials.email.as_deref().is_none_or(str::is_empty) {
+        new_credentials.email = extract_email_from_json_text(&body_text);
+    }
 
     if let Some(new_refresh_token) = data.refresh_token {
         new_credentials.refresh_token = Some(new_refresh_token);
@@ -327,26 +343,30 @@ async fn refresh_idc_token(
         new_credentials.profile_arn = Some(profile_arn);
     }
 
+    let profile_metadata = resolve_profile_metadata(&new_credentials, config, proxy).await?;
     if new_credentials.profile_arn.is_none() {
-        if let Some(profile_arn) = resolve_profile_arn(&new_credentials, config, proxy).await? {
+        if let Some(profile_arn) = profile_metadata.profile_arn {
             new_credentials.profile_arn = Some(profile_arn);
         }
+    }
+    if new_credentials.email.as_deref().is_none_or(str::is_empty) {
+        new_credentials.email = profile_metadata.email;
     }
 
     Ok(new_credentials)
 }
 
-/// 从 Kiro management/ListAvailableProfiles 解析当前凭据可用的 Profile ARN。
+/// 从 Kiro management/ListAvailableProfiles 解析当前凭据可用的 Profile ARN 和邮箱。
 ///
 /// IdC / Builder-ID 凭据的 refresh 响应不稳定返回 profileArn；旧端点可缺省，
 /// 但 runtime.<region>.kiro.dev 会直接拒绝缺 profileArn 的请求。
-async fn resolve_profile_arn(
+async fn resolve_profile_metadata(
     credentials: &KiroCredentials,
     config: &Config,
     proxy: Option<&ProxyConfig>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<ProfileMetadata> {
     let Some(token) = credentials.access_token.as_deref() else {
-        return Ok(None);
+        return Ok(ProfileMetadata::default());
     };
 
     let client = build_client(proxy, 60, config.tls_backend)?;
@@ -400,26 +420,90 @@ async fn resolve_profile_arn(
             .json()
             .await
             .context("解析 Kiro profile 列表失败")?;
-        if let Some(arn) = payload
+        let profile_arn = payload
             .get("profiles")
             .and_then(|v| v.as_array())
-            .and_then(|profiles| {
-                profiles.iter().find_map(|profile| {
-                    profile
-                        .get("arn")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|v| !v.is_empty())
-                        .map(ToString::to_string)
-                })
-            })
-        {
+            .and_then(|profiles| first_profile_arn(profiles));
+        let email = extract_email_from_value(&payload);
+
+        if let Some(ref arn) = profile_arn {
             tracing::info!("已解析 Kiro profileArn: {}", arn);
-            return Ok(Some(arn));
+        }
+        if let Some(ref email) = email {
+            tracing::info!("已解析 Kiro 凭据邮箱: {}", email);
+        }
+        if profile_arn.is_some() || email.is_some() {
+            return Ok(ProfileMetadata { profile_arn, email });
         }
     }
 
-    Ok(None)
+    Ok(ProfileMetadata::default())
+}
+
+#[derive(Debug, Default)]
+struct ProfileMetadata {
+    profile_arn: Option<String>,
+    email: Option<String>,
+}
+
+fn first_profile_arn(profiles: &[Value]) -> Option<String> {
+    profiles.iter().find_map(|profile| {
+        profile
+            .get("arn")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn extract_email_from_json_text(text: &str) -> Option<String> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| extract_email_from_value(&value))
+}
+
+fn extract_email_from_value(value: &Value) -> Option<String> {
+    const EMAIL_KEYS: &[&str] = &[
+        "email",
+        "emailAddress",
+        "userEmail",
+        "username",
+        "preferredUsername",
+        "login",
+    ];
+
+    match value {
+        Value::Object(map) => {
+            for key in EMAIL_KEYS {
+                if let Some(email) = map
+                    .get(*key)
+                    .and_then(|v| v.as_str())
+                    .and_then(normalize_email)
+                {
+                    return Some(email);
+                }
+            }
+
+            map.values().find_map(extract_email_from_value)
+        }
+        Value::Array(items) => items.iter().find_map(extract_email_from_value),
+        Value::String(s) => normalize_email(s),
+        _ => None,
+    }
+}
+
+fn normalize_email(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() > 3
+        && trimmed.len() <= 254
+        && trimmed.contains('@')
+        && !trimmed.contains(char::is_whitespace)
+    {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
 }
 
 /// getUsageLimits API 所需的 x-amz-user-agent header 前缀
@@ -2322,6 +2406,28 @@ mod tests {
             result,
             "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
         );
+    }
+
+    #[test]
+    fn test_extract_email_from_nested_profile_payload() {
+        let payload = serde_json::json!({
+            "profiles": [
+                {
+                    "arn": "arn:aws:codewhisperer:us-east-1:123:profile/abc",
+                    "owner": { "emailAddress": "owner@example.com" }
+                }
+            ]
+        });
+        assert_eq!(
+            extract_email_from_value(&payload),
+            Some("owner@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_email_ignores_non_email_username() {
+        let payload = serde_json::json!({ "username": "not-an-email" });
+        assert_eq!(extract_email_from_value(&payload), None);
     }
 
     #[tokio::test]

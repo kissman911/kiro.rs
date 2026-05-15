@@ -2,6 +2,13 @@
 
 这个文件记录 KissAPI 分支每一次面向生产的二次开发版本。每次功能更新或生产镜像发布前，先新增一条记录，再提交代码。
 
+## 2026.5.15-kiss.2 — credential-owner-email
+
+- Admin UI 凭据卡片新增“邮箱 / 归属”展示区，明确显示每条凭据归属。
+- 没有邮箱时显示“未识别邮箱”，并提示可通过 KAM 导入带 email 的凭据或刷新 Token 尝试自动识别。
+- Token 刷新后会从 refresh 响应与 Kiro `ListAvailableProfiles` 响应中递归提取 email / emailAddress / userEmail 等字段，并写回凭据文件。
+- 保留导入时传入的 email 字段，避免自动解析覆盖人工标注。
+
 ## 2026.5.15-kiss.1 — overage-autodisable
 
 - 当 Kiro 上游返回 `402 Payment Required` 且错误体包含 `OVERAGE_REQUEST...` 或 `You have reached the limit for overages` 时，自动判定该凭据超额额度已耗尽。

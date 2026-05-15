@@ -1,7 +1,7 @@
 {
-  "version": "2026.5.15-kiss.1",
+  "version": "2026.5.15-kiss.2",
   "channel": "kissapi",
-  "codename": "overage-autodisable",
+  "codename": "credential-owner-email",
   "date": "2026-05-15",
-  "summary": "Automatically disable the active credential when Kiro reports the overage limit has been reached."
+  "summary": "Show credential owner email in Admin UI and auto-fill email metadata from Kiro token/profile responses when available."
 }
