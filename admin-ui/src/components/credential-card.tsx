@@ -177,16 +177,20 @@ export function CredentialCard({
 
   return (
     <>
-      <Card className={credential.isCurrent ? 'ring-2 ring-primary' : ''}>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Checkbox
-                checked={selected}
-                onCheckedChange={onToggleSelect}
-              />
-              <CardTitle className="text-lg flex items-center gap-2">
-                <span className={credential.email ? '' : 'text-muted-foreground'}>
+      <Card className={credential.isCurrent ? 'ring-2 ring-primary overflow-visible' : 'overflow-visible'}>
+        <CardHeader className="pb-3 space-y-3">
+          <div className="flex items-start gap-2">
+            <Checkbox
+              checked={selected}
+              onCheckedChange={onToggleSelect}
+              className="mt-1 shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <CardTitle className="text-lg flex flex-wrap items-center gap-2 leading-7">
+                <span
+                  className={credential.email ? 'min-w-0 max-w-full truncate' : 'text-muted-foreground'}
+                  title={credential.email || `凭据 #${credential.id}`}
+                >
                   {credential.email || `凭据 #${credential.id}`}
                 </span>
                 {credential.isCurrent && (
@@ -196,7 +200,7 @@ export function CredentialCard({
                   <Badge variant="destructive">已禁用</Badge>
                 )}
                 {credential.disabled && credential.disabledReason && (
-                  <Badge variant="outline">{credential.disabledReason}</Badge>
+                  <Badge variant="outline" className="max-w-full truncate">{credential.disabledReason}</Badge>
                 )}
                 {credential.authMethod && (
                   <Badge variant="secondary">
@@ -214,8 +218,13 @@ export function CredentialCard({
                 )}
               </CardTitle>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">启用</span>
+          </div>
+          <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+            <span className="text-sm text-muted-foreground">
+              {credential.disabled ? '当前已禁用' : '当前已启用'}
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-sm font-medium">启用</span>
               <Switch
                 checked={!credential.disabled}
                 onCheckedChange={handleToggleDisabled}
@@ -378,10 +387,11 @@ export function CredentialCard({
           </div>
 
           {/* 操作按钮 */}
-          <div className="flex flex-wrap gap-2 pt-2 border-t">
+          <div className="grid grid-cols-2 gap-2 pt-3 border-t sm:grid-cols-3 xl:grid-cols-4">
             <Button
               size="sm"
               variant="outline"
+              className="w-full justify-start whitespace-nowrap"
               onClick={handleReset}
               disabled={resetFailure.isPending || (credential.failureCount === 0 && credential.refreshFailureCount === 0)}
             >
@@ -391,6 +401,7 @@ export function CredentialCard({
             <Button
               size="sm"
               variant="outline"
+              className="w-full justify-start whitespace-nowrap"
               onClick={handleForceRefresh}
               disabled={forceRefresh.isPending || credential.disabled || credential.authMethod === 'api_key'}
               title={credential.authMethod === 'api_key' ? 'API Key 凭据无需刷新 Token' : credential.disabled ? '已禁用的凭据无法刷新 Token' : '强制刷新 Token'}
@@ -401,6 +412,7 @@ export function CredentialCard({
             <Button
               size="sm"
               variant="outline"
+              className="w-full justify-start whitespace-nowrap"
               onClick={() => {
                 const newPriority = Math.max(0, credential.priority - 1)
                 setPriority.mutate(
@@ -419,6 +431,7 @@ export function CredentialCard({
             <Button
               size="sm"
               variant="outline"
+              className="w-full justify-start whitespace-nowrap"
               onClick={() => {
                 const newPriority = credential.priority + 1
                 setPriority.mutate(
@@ -437,6 +450,7 @@ export function CredentialCard({
             <Button
               size="sm"
               variant="outline"
+              className="w-full justify-start whitespace-nowrap"
               onClick={() => setShowRateLimitDialog(true)}
             >
               <Gauge className="h-4 w-4 mr-1" />
@@ -445,6 +459,7 @@ export function CredentialCard({
             <Button
               size="sm"
               variant="default"
+              className="w-full justify-start whitespace-nowrap"
               onClick={() => onViewBalance(credential.id)}
             >
               <Wallet className="h-4 w-4 mr-1" />
@@ -453,6 +468,7 @@ export function CredentialCard({
             <Button
               size="sm"
               variant="destructive"
+              className="w-full justify-start whitespace-nowrap"
               onClick={() => setShowDeleteDialog(true)}
               disabled={!credential.disabled}
               title={!credential.disabled ? '需要先禁用凭据才能删除' : undefined}
