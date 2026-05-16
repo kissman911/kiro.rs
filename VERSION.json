@@ -1,7 +1,7 @@
 {
-  "version": "2026.5.15-kiss.2",
+  "version": "2026.5.16-kiss.1",
   "channel": "kissapi",
-  "codename": "credential-owner-email",
-  "date": "2026-05-15",
-  "summary": "Show credential owner email in Admin UI and auto-fill email metadata from Kiro token/profile responses when available."
+  "codename": "credential-card-layout",
+  "date": "2026-05-16",
+  "summary": "Fix Admin UI credential card layout: keep enable switch visible and action buttons readable in narrow cards."
 }
