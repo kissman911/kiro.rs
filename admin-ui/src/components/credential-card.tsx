@@ -387,32 +387,32 @@ export function CredentialCard({
           </div>
 
           {/* 操作按钮 */}
-          <div className="grid grid-cols-2 gap-2 pt-3 border-t sm:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 pt-3 border-t">
             <Button
               size="sm"
               variant="outline"
-              className="w-full justify-start whitespace-nowrap"
+              className="w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={handleReset}
               disabled={resetFailure.isPending || (credential.failureCount === 0 && credential.refreshFailureCount === 0)}
             >
-              <RefreshCw className="h-4 w-4 mr-1" />
+              <RefreshCw className="h-4 w-4 mr-1 shrink-0" />
               重置失败
             </Button>
             <Button
               size="sm"
               variant="outline"
-              className="w-full justify-start whitespace-nowrap"
+              className="w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={handleForceRefresh}
               disabled={forceRefresh.isPending || credential.disabled || credential.authMethod === 'api_key'}
               title={credential.authMethod === 'api_key' ? 'API Key 凭据无需刷新 Token' : credential.disabled ? '已禁用的凭据无法刷新 Token' : '强制刷新 Token'}
             >
-              <RefreshCw className={`h-4 w-4 mr-1 ${forceRefresh.isPending ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-4 w-4 mr-1 shrink-0 ${forceRefresh.isPending ? 'animate-spin' : ''}`} />
               刷新 Token
             </Button>
             <Button
               size="sm"
               variant="outline"
-              className="w-full justify-start whitespace-nowrap"
+              className="w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={() => {
                 const newPriority = Math.max(0, credential.priority - 1)
                 setPriority.mutate(
@@ -425,13 +425,13 @@ export function CredentialCard({
               }}
               disabled={setPriority.isPending || credential.priority === 0}
             >
-              <ChevronUp className="h-4 w-4 mr-1" />
+              <ChevronUp className="h-4 w-4 mr-1 shrink-0" />
               提高优先级
             </Button>
             <Button
               size="sm"
               variant="outline"
-              className="w-full justify-start whitespace-nowrap"
+              className="w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={() => {
                 const newPriority = credential.priority + 1
                 setPriority.mutate(
@@ -444,36 +444,36 @@ export function CredentialCard({
               }}
               disabled={setPriority.isPending}
             >
-              <ChevronDown className="h-4 w-4 mr-1" />
+              <ChevronDown className="h-4 w-4 mr-1 shrink-0" />
               降低优先级
             </Button>
             <Button
               size="sm"
               variant="outline"
-              className="w-full justify-start whitespace-nowrap"
+              className="w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={() => setShowRateLimitDialog(true)}
             >
-              <Gauge className="h-4 w-4 mr-1" />
+              <Gauge className="h-4 w-4 mr-1 shrink-0" />
               RPM 限制
             </Button>
             <Button
               size="sm"
               variant="default"
-              className="w-full justify-start whitespace-nowrap"
+              className="w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={() => onViewBalance(credential.id)}
             >
-              <Wallet className="h-4 w-4 mr-1" />
+              <Wallet className="h-4 w-4 mr-1 shrink-0" />
               查看余额
             </Button>
             <Button
               size="sm"
               variant="destructive"
-              className="w-full justify-start whitespace-nowrap"
+              className="col-span-2 w-full justify-center whitespace-nowrap px-2 text-xs sm:text-sm"
               onClick={() => setShowDeleteDialog(true)}
               disabled={!credential.disabled}
               title={!credential.disabled ? '需要先禁用凭据才能删除' : undefined}
             >
-              <Trash2 className="h-4 w-4 mr-1" />
+              <Trash2 className="h-4 w-4 mr-1 shrink-0" />
               删除
             </Button>
           </div>
