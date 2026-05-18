@@ -676,6 +676,18 @@ impl KiroProvider {
             anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
         }
 
+        if Self::is_suspicious_activity_rate_limit(status, &body) {
+            tracing::warn!(
+                "固定凭据 API 请求失败（Kiro suspicious activity 429，冷却凭据）: credential_id={} {} {}",
+                ctx.id,
+                status,
+                body
+            );
+            self.token_manager
+                .report_suspicious_rate_limited(ctx.id, SUSPICIOUS_RATE_LIMIT_COOLDOWN);
+            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        }
+
         if matches!(status.as_u16(), 401 | 403) {
             self.token_manager.report_failure(ctx.id);
             anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
