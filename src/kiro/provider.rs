@@ -28,6 +28,10 @@ pub(crate) const AWS_SDK_JS_VERSION: &str = "1.0.34";
 /// 总重试次数硬上限（避免无限重试）
 const MAX_TOTAL_RETRIES: usize = 9;
 
+/// Kiro 上游 suspicious activity 429 的账号级冷却时间。
+/// 先用保守的 30 分钟，避免继续重试同一账号扩大风控。
+const SUSPICIOUS_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+
 /// Kiro API Provider
 ///
 /// 核心组件，负责与 Kiro API 通信
@@ -194,6 +198,16 @@ impl KiroProvider {
         self.call_mcp_with_retry(request_body).await
     }
 
+    pub(crate) fn is_suspicious_activity_rate_limit(
+        status: reqwest::StatusCode,
+        body: &str,
+    ) -> bool {
+        status.as_u16() == 429
+            && body.contains("Due to suspicious activity")
+            && body.contains("temporary limits")
+            && body.contains("can send a request to Kiro")
+    }
+
     /// 内部方法：带重试逻辑的 MCP API 调用
     async fn call_mcp_with_retry(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
         let total_credentials = self.token_manager.total_count();
@@ -306,6 +320,29 @@ impl KiroProvider {
                 let has_available = self.token_manager.report_failure(ctx.id);
                 if !has_available {
                     anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
+                }
+                last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
+                continue;
+            }
+
+            // Kiro suspicious activity 429：账号级临时风控，冷却当前凭据并切换，避免继续重试扩大风控
+            if Self::is_suspicious_activity_rate_limit(status, &body) {
+                tracing::warn!(
+                    "MCP 请求失败（Kiro suspicious activity 429，冷却凭据并切换，尝试 {}/{}）: {} {}",
+                    attempt + 1,
+                    max_retries,
+                    status,
+                    body
+                );
+                let has_available = self
+                    .token_manager
+                    .report_suspicious_rate_limited(ctx.id, SUSPICIOUS_RATE_LIMIT_COOLDOWN);
+                if !has_available {
+                    anyhow::bail!(
+                        "MCP 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
+                        status,
+                        body
+                    );
                 }
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                 continue;
@@ -513,6 +550,35 @@ impl KiroProvider {
                 continue;
             }
 
+            // Kiro suspicious activity 429：账号级临时风控，冷却当前凭据并切换，避免继续重试扩大风控
+            if Self::is_suspicious_activity_rate_limit(status, &body) {
+                tracing::warn!(
+                    "API 请求失败（Kiro suspicious activity 429，冷却凭据并切换，尝试 {}/{}）: {} {}",
+                    attempt + 1,
+                    max_retries,
+                    status,
+                    body
+                );
+                let has_available = self
+                    .token_manager
+                    .report_suspicious_rate_limited(ctx.id, SUSPICIOUS_RATE_LIMIT_COOLDOWN);
+                if !has_available {
+                    anyhow::bail!(
+                        "{} API 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
+                        api_type,
+                        status,
+                        body
+                    );
+                }
+                last_error = Some(anyhow::anyhow!(
+                    "{} API 请求失败: {} {}",
+                    api_type,
+                    status,
+                    body
+                ));
+                continue;
+            }
+
             // 429/408/5xx - 瞬态上游错误：重试但不禁用或切换凭据
             // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
@@ -643,5 +709,28 @@ impl KiroProvider {
         let jitter_max = (backoff / 4).max(1);
         let jitter = fastrand::u64(0..=jitter_max);
         Duration::from_millis(backoff.saturating_add(jitter))
+    }
+}
+
+#[cfg(test)]
+mod suspicious_rate_limit_tests {
+    use super::*;
+
+    #[test]
+    fn detects_kiro_suspicious_activity_429() {
+        let body = r#"{"message":"Due to suspicious activity, we are imposing temporary limits on how frequently your account (84186448-90e1-7028-70d9-e1a19887ad7b) can send a request to Kiro while we investigate.","reason":null}"#;
+        assert!(KiroProvider::is_suspicious_activity_rate_limit(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_generic_429_as_suspicious_activity() {
+        let body = r#"{"message":"Too many requests, please try again later"}"#;
+        assert!(!KiroProvider::is_suspicious_activity_rate_limit(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body
+        ));
     }
 }

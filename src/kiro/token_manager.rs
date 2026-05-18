@@ -615,6 +615,8 @@ struct CredentialEntry {
     last_used_at: Option<String>,
     /// 运行时限流状态（仅内存）
     rate_limit_state: CredentialRateLimitState,
+    /// 上游账号级临时风控冷却截止时间（仅内存）
+    cooldown_until: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -817,6 +819,7 @@ impl MultiTokenManager {
                     success_count: 0,
                     last_used_at: None,
                     rate_limit_state: CredentialRateLimitState::default(),
+                    cooldown_until: None,
                 }
             })
             .collect();
@@ -900,9 +903,14 @@ impl MultiTokenManager {
         self.entries.lock().len()
     }
 
-    /// 获取可用凭据数量
+    /// 获取当前可用凭据数量（排除手动/自动禁用和运行时冷却中的凭据）
     pub fn available_count(&self) -> usize {
-        self.entries.lock().iter().filter(|e| !e.disabled).count()
+        let now = Instant::now();
+        self.entries
+            .lock()
+            .iter()
+            .filter(|e| !e.disabled && e.cooldown_until.is_none_or(|until| until <= now))
+            .count()
     }
 
     /// 根据负载均衡模式选择下一个凭据
@@ -984,6 +992,12 @@ impl MultiTokenManager {
             if entry.disabled {
                 continue;
             }
+            if entry.cooldown_until.is_some_and(|until| until > now) {
+                continue;
+            }
+            if entry.cooldown_until.is_some() {
+                entry.cooldown_until = None;
+            }
             if is_opus && !entry.credentials.supports_opus() {
                 continue;
             }
@@ -1057,6 +1071,12 @@ impl MultiTokenManager {
                         .iter_mut()
                         .find(|e| e.id == current_id && !e.disabled)
                         .and_then(|e| {
+                            if e.cooldown_until.is_some_and(|until| until > now) {
+                                return None;
+                            }
+                            if e.cooldown_until.is_some() {
+                                e.cooldown_until = None;
+                            }
                             if is_opus && !e.credentials.supports_opus() {
                                 return None;
                             }
@@ -1110,7 +1130,27 @@ impl MultiTokenManager {
                         // 注意：必须在 bail! 之前计算 available_count，
                         // 因为 available_count() 会尝试获取 entries 锁，
                         // 而此时我们已经持有该锁，会导致死锁
-                        let available = entries.iter().filter(|e| !e.disabled).count();
+                        let now = Instant::now();
+                        let available = entries
+                            .iter()
+                            .filter(|e| {
+                                !e.disabled && e.cooldown_until.is_none_or(|until| until <= now)
+                            })
+                            .count();
+                        let cooling = entries
+                            .iter()
+                            .filter(|e| {
+                                !e.disabled && e.cooldown_until.is_some_and(|until| until > now)
+                            })
+                            .count();
+                        if cooling > 0 {
+                            anyhow::bail!(
+                                "所有凭据均不可用（可用: {}/{}, 冷却中: {}）",
+                                available,
+                                total,
+                                cooling
+                            );
+                        }
                         anyhow::bail!("所有凭据均已禁用（{}/{}）", available, total);
                     }
                 }
@@ -1543,6 +1583,63 @@ impl MultiTokenManager {
                 true
             } else {
                 tracing::error!("所有凭据均已禁用！");
+                false
+            }
+        };
+        self.save_stats_debounced();
+        result
+    }
+
+    /// 报告指定凭据被上游账号级 suspicious activity 临时限频。
+    ///
+    /// 这类 429 不是普通 high traffic 瞬态错误。继续打同一账号会扩大风控，
+    /// 因此只做运行时冷却/熔断，不写回 disabled 到 credentials.json。
+    pub fn report_suspicious_rate_limited(&self, id: u64, cooldown: StdDuration) -> bool {
+        let result = {
+            let mut entries = self.entries.lock();
+            let mut current_id = self.current_id.lock();
+            let now = Instant::now();
+            let until = now + cooldown;
+
+            let entry = match entries.iter_mut().find(|e| e.id == id) {
+                Some(e) => e,
+                None => {
+                    return entries
+                        .iter()
+                        .any(|e| !e.disabled && e.cooldown_until.is_none_or(|until| until <= now));
+                }
+            };
+
+            if entry.disabled {
+                return entries
+                    .iter()
+                    .any(|e| !e.disabled && e.cooldown_until.is_none_or(|until| until <= now));
+            }
+
+            entry.cooldown_until = Some(until);
+            entry.last_used_at = Some(Utc::now().to_rfc3339());
+            // 不累计普通失败次数，避免和 401/403/配置错误混淆；这是运行时风控冷却。
+
+            tracing::warn!(
+                "凭据 #{} 被 Kiro 上游 suspicious activity 临时限频，冷却 {} 秒后再参与调度",
+                id,
+                cooldown.as_secs()
+            );
+
+            if let Some(next) = entries
+                .iter()
+                .filter(|e| !e.disabled && e.cooldown_until.is_none_or(|until| until <= now))
+                .min_by_key(|e| e.credentials.priority)
+            {
+                *current_id = next.id;
+                tracing::info!(
+                    "已切换到凭据 #{}（优先级 {}）",
+                    next.id,
+                    next.credentials.priority
+                );
+                true
+            } else {
+                tracing::error!("所有未禁用凭据都在上游风控冷却中！");
                 false
             }
         };
@@ -2162,6 +2259,7 @@ impl MultiTokenManager {
                 success_count: 0,
                 last_used_at: None,
                 rate_limit_state: CredentialRateLimitState::default(),
+                cooldown_until: None,
             });
         }
 
@@ -3048,5 +3146,51 @@ mod tests {
 
         assert_eq!(credentials.effective_auth_region(&config), "auth-only");
         assert_eq!(credentials.effective_api_region(&config), "api-only");
+    }
+}
+
+#[cfg(test)]
+mod suspicious_cooldown_tests {
+    use super::*;
+
+    #[test]
+    fn suspicious_rate_limit_cools_credential_without_persistently_disabling() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.id = Some(1);
+        cred1.refresh_token = Some("token1".to_string());
+        cred1.priority = 0;
+        let mut cred2 = KiroCredentials::default();
+        cred2.id = Some(2);
+        cred2.refresh_token = Some("token2".to_string());
+        cred2.priority = 1;
+
+        let manager = MultiTokenManager::new(config, vec![cred1, cred2], None, None, false)
+            .expect("manager should initialize");
+
+        assert_eq!(manager.available_count(), 2);
+        assert!(manager.report_suspicious_rate_limited(1, StdDuration::from_secs(60)));
+        assert_eq!(manager.available_count(), 1);
+
+        let entries = manager.entries.lock();
+        let cooled = entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(!cooled.disabled);
+        assert!(cooled.cooldown_until.is_some());
+        let active = entries.iter().find(|e| e.id == 2).unwrap();
+        assert!(!active.disabled);
+    }
+
+    #[test]
+    fn suspicious_rate_limit_returns_false_when_all_credentials_are_cooling() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.id = Some(1);
+        cred.refresh_token = Some("token1".to_string());
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false)
+            .expect("manager should initialize");
+
+        assert!(!manager.report_suspicious_rate_limited(1, StdDuration::from_secs(60)));
+        assert_eq!(manager.available_count(), 0);
     }
 }
