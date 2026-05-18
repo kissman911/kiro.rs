@@ -47,6 +47,8 @@ export interface CredentialStatusItem {
   endpoint: string
   allowOverage: boolean
   rateLimits?: RateLimitRule[]
+  cooldownUntil?: string
+  cooldownRemainingSeconds?: number
 }
 
 // 余额响应

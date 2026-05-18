@@ -1,7 +1,7 @@
 {
-  "version": "2026.5.16-kiss.1",
+  "version": "2026.5.18-kiss.1",
   "channel": "kissapi",
-  "codename": "credential-card-layout",
-  "date": "2026-05-16",
-  "summary": "Fix Admin UI credential card layout: keep enable switch visible and action buttons readable in narrow cards."
+  "codename": "cooldown-visibility",
+  "date": "2026-05-18",
+  "summary": "Show suspicious-activity cooldown status in Admin API and credential cards."
 }

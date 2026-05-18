@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge, Mail } from 'lucide-react'
+import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge, Mail, Clock3 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -39,6 +39,15 @@ interface CredentialCardProps {
 function formatRateLimits(rules?: RateLimitRule[]): string {
   if (!rules || rules.length === 0) return '使用全局默认'
   return rules.map((rule) => `${rule.window}/${rule.maxRequests}`).join('，')
+}
+
+
+function formatCooldown(seconds?: number): string {
+  if (!seconds || seconds <= 0) return ''
+  const minutes = Math.floor(seconds / 60)
+  const remainSeconds = seconds % 60
+  if (minutes <= 0) return `${remainSeconds} 秒`
+  return `${minutes} 分 ${remainSeconds} 秒`
 }
 
 function formatLastUsed(lastUsedAt: string | null): string {
@@ -174,6 +183,8 @@ export function CredentialCard({
   }
 
   const credentialOwner = credential.email?.trim() || '未识别邮箱'
+  const isCoolingDown = Boolean(credential.cooldownRemainingSeconds && credential.cooldownRemainingSeconds > 0)
+  const cooldownText = formatCooldown(credential.cooldownRemainingSeconds)
 
   return (
     <>
@@ -199,6 +210,16 @@ export function CredentialCard({
                 {credential.disabled && (
                   <Badge variant="destructive">已禁用</Badge>
                 )}
+                {isCoolingDown && (
+                  <Badge
+                    variant="warning"
+                    className="max-w-full gap-1 bg-amber-500 text-white border-transparent"
+                    title={credential.cooldownUntil ? `冷却至 ${new Date(credential.cooldownUntil).toLocaleString()}` : undefined}
+                  >
+                    <Clock3 className="h-3 w-3" />
+                    冷却中 {cooldownText}
+                  </Badge>
+                )}
                 {credential.disabled && credential.disabledReason && (
                   <Badge variant="outline" className="max-w-full truncate">{credential.disabledReason}</Badge>
                 )}
@@ -221,7 +242,7 @@ export function CredentialCard({
           </div>
           <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
             <span className="text-sm text-muted-foreground">
-              {credential.disabled ? '当前已禁用' : '当前已启用'}
+              {credential.disabled ? '当前已禁用' : isCoolingDown ? `风控冷却中，剩余 ${cooldownText}` : '当前已启用'}
             </span>
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-sm font-medium">启用</span>
@@ -325,6 +346,16 @@ export function CredentialCard({
               <span className="text-muted-foreground">最后调用：</span>
               <span className="font-medium">{formatLastUsed(credential.lastUsedAt)}</span>
             </div>
+            {isCoolingDown && (
+              <div className="col-span-2 flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-700 dark:text-amber-300">
+                <Clock3 className="h-4 w-4 shrink-0" />
+                <span className="text-muted-foreground">风控冷却：</span>
+                <span className="font-medium">剩余 {cooldownText}</span>
+                {credential.cooldownUntil && (
+                  <span className="text-xs text-muted-foreground">至 {new Date(credential.cooldownUntil).toLocaleString()}</span>
+                )}
+              </div>
+            )}
             {credential.maskedApiKey && (
               <div className="col-span-2">
                 <span className="text-muted-foreground">API Key：</span>

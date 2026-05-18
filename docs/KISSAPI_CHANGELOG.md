@@ -2,6 +2,12 @@
 
 这个文件记录 KissAPI 分支每一次面向生产的二次开发版本。每次功能更新或生产镜像发布前，先新增一条记录，再提交代码。
 
+## 2026.5.18-kiss.1 — cooldown-visibility
+
+- Admin API 凭据快照新增 `cooldownUntil` 与 `cooldownRemainingSeconds` 字段，用于展示 suspicious activity 429 的运行时冷却状态。
+- Admin UI 凭据卡片新增“冷却中”徽标，并显示剩余时间与冷却截止时间。
+- 冷却状态仍只保存在内存中，不写回 credentials.json，也不等同于永久禁用。
+
 ## 2026.5.16-kiss.1 — credential-card-layout
 
 - Admin UI 凭据卡片标题区重新排版，启用开关独立成状态行，避免被长标签挤压遮挡。

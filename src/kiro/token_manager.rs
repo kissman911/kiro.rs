@@ -15,7 +15,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration as StdDuration, Instant};
+use std::time::{Duration as StdDuration, Instant, SystemTime};
 
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::machine_id;
@@ -615,8 +615,10 @@ struct CredentialEntry {
     last_used_at: Option<String>,
     /// 运行时限流状态（仅内存）
     rate_limit_state: CredentialRateLimitState,
-    /// 上游账号级临时风控冷却截止时间（仅内存）
+    /// 上游账号级临时风控冷却截止时间（仅内存，用于调度判断）
     cooldown_until: Option<Instant>,
+    /// 上游账号级临时风控冷却截止墙钟时间（仅内存，用于 Admin API 展示）
+    cooldown_until_wall: Option<DateTime<Utc>>,
 }
 
 #[derive(Default)]
@@ -706,6 +708,12 @@ pub struct CredentialEntrySnapshot {
     /// 凭据级限流规则
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
+    /// 运行时冷却截止时间（RFC3339，仅内存状态）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooldown_until: Option<String>,
+    /// 运行时冷却剩余秒数（仅内存状态）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooldown_remaining_seconds: Option<u64>,
 }
 
 /// 凭据管理器状态快照
@@ -820,6 +828,7 @@ impl MultiTokenManager {
                     last_used_at: None,
                     rate_limit_state: CredentialRateLimitState::default(),
                     cooldown_until: None,
+                    cooldown_until_wall: None,
                 }
             })
             .collect();
@@ -1600,6 +1609,8 @@ impl MultiTokenManager {
             let mut current_id = self.current_id.lock();
             let now = Instant::now();
             let until = now + cooldown;
+            let until_wall =
+                Utc::now() + Duration::from_std(cooldown).unwrap_or_else(|_| Duration::minutes(30));
 
             let entry = match entries.iter_mut().find(|e| e.id == id) {
                 Some(e) => e,
@@ -1617,6 +1628,7 @@ impl MultiTokenManager {
             }
 
             entry.cooldown_until = Some(until);
+            entry.cooldown_until_wall = Some(until_wall);
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             // 不累计普通失败次数，避免和 401/403/配置错误混淆；这是运行时风控冷却。
 
@@ -1788,73 +1800,98 @@ impl MultiTokenManager {
     // Admin API 方法
     // ========================================================================
 
+    fn cooldown_snapshot(entry: &CredentialEntry, now: Instant) -> (Option<String>, Option<u64>) {
+        let Some(until) = entry.cooldown_until else {
+            return (None, None);
+        };
+        if until <= now {
+            return (None, None);
+        }
+        let remaining = until.duration_since(now).as_secs();
+        let until_wall = entry.cooldown_until_wall.unwrap_or_else(|| {
+            DateTime::<Utc>::from(SystemTime::now() + until.duration_since(now))
+        });
+        (Some(until_wall.to_rfc3339()), Some(remaining.max(1)))
+    }
+
     /// 获取管理器状态快照（用于 Admin API）
     pub fn snapshot(&self) -> ManagerSnapshot {
         let entries = self.entries.lock();
         let current_id = *self.current_id.lock();
-        let available = entries.iter().filter(|e| !e.disabled).count();
+        let now = Instant::now();
+        let available = entries
+            .iter()
+            .filter(|e| !e.disabled && e.cooldown_until.is_none_or(|until| until <= now))
+            .count();
 
         ManagerSnapshot {
             entries: entries
                 .iter()
-                .map(|e| CredentialEntrySnapshot {
-                    id: e.id,
-                    priority: e.credentials.priority,
-                    disabled: e.disabled,
-                    failure_count: e.failure_count,
-                    auth_method: if e.credentials.is_api_key_credential() {
-                        Some("api_key".to_string())
-                    } else {
-                        e.credentials.auth_method.as_deref().map(|m| {
-                            if m.eq_ignore_ascii_case("builder-id") || m.eq_ignore_ascii_case("iam")
-                            {
-                                "idc".to_string()
-                            } else {
-                                m.to_string()
+                .map(|e| {
+                    let (cooldown_until, cooldown_remaining_seconds) =
+                        Self::cooldown_snapshot(e, now);
+                    CredentialEntrySnapshot {
+                        id: e.id,
+                        priority: e.credentials.priority,
+                        disabled: e.disabled,
+                        failure_count: e.failure_count,
+                        auth_method: if e.credentials.is_api_key_credential() {
+                            Some("api_key".to_string())
+                        } else {
+                            e.credentials.auth_method.as_deref().map(|m| {
+                                if m.eq_ignore_ascii_case("builder-id")
+                                    || m.eq_ignore_ascii_case("iam")
+                                {
+                                    "idc".to_string()
+                                } else {
+                                    m.to_string()
+                                }
+                            })
+                        },
+                        has_profile_arn: e.credentials.profile_arn.is_some(),
+                        expires_at: if e.credentials.is_api_key_credential() {
+                            None // API Key 凭据本地不维护过期时间（服务端策略未知）
+                        } else {
+                            e.credentials.expires_at.clone()
+                        },
+                        refresh_token_hash: if e.credentials.is_api_key_credential() {
+                            None
+                        } else {
+                            e.credentials.refresh_token.as_deref().map(sha256_hex)
+                        },
+                        api_key_hash: if e.credentials.is_api_key_credential() {
+                            e.credentials.kiro_api_key.as_deref().map(sha256_hex)
+                        } else {
+                            None
+                        },
+                        masked_api_key: if e.credentials.is_api_key_credential() {
+                            e.credentials.kiro_api_key.as_deref().map(mask_api_key)
+                        } else {
+                            None
+                        },
+                        email: e.credentials.email.clone(),
+                        success_count: e.success_count,
+                        last_used_at: e.last_used_at.clone(),
+                        has_proxy: e.credentials.proxy_url.is_some(),
+                        proxy_url: e.credentials.proxy_url.clone(),
+                        refresh_failure_count: e.refresh_failure_count,
+                        disabled_reason: e.disabled_reason.map(|r| {
+                            match r {
+                                DisabledReason::Manual => "Manual",
+                                DisabledReason::TooManyFailures => "TooManyFailures",
+                                DisabledReason::TooManyRefreshFailures => "TooManyRefreshFailures",
+                                DisabledReason::QuotaExceeded => "QuotaExceeded",
+                                DisabledReason::InvalidRefreshToken => "InvalidRefreshToken",
+                                DisabledReason::InvalidConfig => "InvalidConfig",
                             }
-                        })
-                    },
-                    has_profile_arn: e.credentials.profile_arn.is_some(),
-                    expires_at: if e.credentials.is_api_key_credential() {
-                        None // API Key 凭据本地不维护过期时间（服务端策略未知）
-                    } else {
-                        e.credentials.expires_at.clone()
-                    },
-                    refresh_token_hash: if e.credentials.is_api_key_credential() {
-                        None
-                    } else {
-                        e.credentials.refresh_token.as_deref().map(sha256_hex)
-                    },
-                    api_key_hash: if e.credentials.is_api_key_credential() {
-                        e.credentials.kiro_api_key.as_deref().map(sha256_hex)
-                    } else {
-                        None
-                    },
-                    masked_api_key: if e.credentials.is_api_key_credential() {
-                        e.credentials.kiro_api_key.as_deref().map(mask_api_key)
-                    } else {
-                        None
-                    },
-                    email: e.credentials.email.clone(),
-                    success_count: e.success_count,
-                    last_used_at: e.last_used_at.clone(),
-                    has_proxy: e.credentials.proxy_url.is_some(),
-                    proxy_url: e.credentials.proxy_url.clone(),
-                    refresh_failure_count: e.refresh_failure_count,
-                    disabled_reason: e.disabled_reason.map(|r| {
-                        match r {
-                            DisabledReason::Manual => "Manual",
-                            DisabledReason::TooManyFailures => "TooManyFailures",
-                            DisabledReason::TooManyRefreshFailures => "TooManyRefreshFailures",
-                            DisabledReason::QuotaExceeded => "QuotaExceeded",
-                            DisabledReason::InvalidRefreshToken => "InvalidRefreshToken",
-                            DisabledReason::InvalidConfig => "InvalidConfig",
-                        }
-                        .to_string()
-                    }),
-                    endpoint: e.credentials.endpoint.clone(),
-                    allow_overage: e.credentials.allow_overage,
-                    rate_limits: e.credentials.rate_limits.clone(),
+                            .to_string()
+                        }),
+                        endpoint: e.credentials.endpoint.clone(),
+                        allow_overage: e.credentials.allow_overage,
+                        rate_limits: e.credentials.rate_limits.clone(),
+                        cooldown_until,
+                        cooldown_remaining_seconds,
+                    }
                 })
                 .collect(),
             current_id,
@@ -1877,6 +1914,8 @@ impl MultiTokenManager {
                 entry.failure_count = 0;
                 entry.refresh_failure_count = 0;
                 entry.disabled_reason = None;
+                entry.cooldown_until = None;
+                entry.cooldown_until_wall = None;
             } else {
                 entry.disabled_reason = Some(DisabledReason::Manual);
             }
@@ -2260,6 +2299,7 @@ impl MultiTokenManager {
                 last_used_at: None,
                 rate_limit_state: CredentialRateLimitState::default(),
                 cooldown_until: None,
+                cooldown_until_wall: None,
             });
         }
 
