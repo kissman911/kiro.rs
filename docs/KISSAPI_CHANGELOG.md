@@ -2,6 +2,11 @@
 
 这个文件记录 KissAPI 分支每一次面向生产的二次开发版本。每次功能更新或生产镜像发布前，先新增一条记录，再提交代码。
 
+## 2026.5.18-kiss.2 — cooldown-api-pass-through
+
+- 修复 Admin Service 层漏传 `cooldownUntil` / `cooldownRemainingSeconds` 的问题。
+- 顶部“可用凭据”已按冷却扣减，但凭据卡片此前无法显示冷却 badge；本版让前端能收到并展示冷却状态。
+
 ## 2026.5.18-kiss.1 — cooldown-visibility
 
 - Admin API 凭据快照新增 `cooldownUntil` 与 `cooldownRemainingSeconds` 字段，用于展示 suspicious activity 429 的运行时冷却状态。

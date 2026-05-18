@@ -1,7 +1,7 @@
 {
-  "version": "2026.5.18-kiss.1",
+  "version": "2026.5.18-kiss.2",
   "channel": "kissapi",
-  "codename": "cooldown-visibility",
+  "codename": "cooldown-api-pass-through",
   "date": "2026-05-18",
-  "summary": "Show suspicious-activity cooldown status in Admin API and credential cards."
+  "summary": "Pass credential cooldown status through Admin service responses so the UI can display cooling credentials."
 }

@@ -86,6 +86,12 @@ pub struct CredentialStatusItem {
     /// 凭据级限流规则（未配置时为 None，运行时会回退到全局 defaultRateLimits）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
+    /// 运行时冷却截止时间（RFC3339，仅内存状态）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooldown_until: Option<String>,
+    /// 运行时冷却剩余秒数（仅内存状态）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooldown_remaining_seconds: Option<u64>,
 }
 
 // ============ 操作请求 ============

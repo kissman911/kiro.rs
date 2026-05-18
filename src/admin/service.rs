@@ -89,6 +89,8 @@ impl AdminService {
                 endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
                 allow_overage: entry.allow_overage,
                 rate_limits: entry.rate_limits,
+                cooldown_until: entry.cooldown_until,
+                cooldown_remaining_seconds: entry.cooldown_remaining_seconds,
             })
             .collect();
 
