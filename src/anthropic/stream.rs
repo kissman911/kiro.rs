@@ -450,7 +450,7 @@ impl SseStateManager {
     /// 生成最终事件序列
     pub fn generate_final_events(
         &mut self,
-        input_tokens: i32,
+        _input_tokens: i32,
         output_tokens: i32,
     ) -> Vec<SseEvent> {
         let mut events = Vec::new();
@@ -481,7 +481,6 @@ impl SseStateManager {
                         "stop_sequence": null
                     },
                     "usage": {
-                        "input_tokens": input_tokens,
                         "output_tokens": output_tokens
                     }
                 }),
