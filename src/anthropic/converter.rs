@@ -472,28 +472,83 @@ fn process_message_content(
 
 fn document_source_to_text(source: &super::types::ContentSource) -> Option<String> {
     if source.media_type == "text/plain" || source.media_type.starts_with("text/") {
-        if let Ok(bytes) = base64_decode(&source.data) {
-            if let Ok(text) = String::from_utf8(bytes) {
+        match base64_decode(&source.data)
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
+        {
+            Ok(text) => {
+                tracing::info!(
+                    target: "document_shape",
+                    media_type = %source.media_type,
+                    base64_chars = source.data.len(),
+                    extracted_chars = text.chars().count(),
+                    extracted = true,
+                    "Document text extracted"
+                );
                 return Some(format!(
                     "{} media_type={}
 {}",
                     DOCUMENT_TEXT_PREFIX, source.media_type, text
                 ));
             }
+            Err(err) => {
+                tracing::warn!(
+                    target: "document_shape",
+                    media_type = %source.media_type,
+                    base64_chars = source.data.len(),
+                    extracted = false,
+                    error = %err,
+                    "Document text extraction failed"
+                );
+            }
         }
     }
 
     if source.media_type == "application/pdf" {
-        if let Ok(bytes) = base64_decode(&source.data) {
-            if let Ok(text) = pdf_extract::extract_text_from_mem(&bytes) {
-                let text = truncate_document_text(text.trim());
-                if !text.is_empty() {
-                    return Some(format!(
-                        "{} media_type={}
+        match base64_decode(&source.data) {
+            Ok(bytes) => match pdf_extract::extract_text_from_mem(&bytes) {
+                Ok(text) => {
+                    let original_chars = text.chars().count();
+                    let text = truncate_document_text(text.trim());
+                    let extracted_chars = text.chars().count();
+                    tracing::info!(
+                        target: "document_shape",
+                        media_type = %source.media_type,
+                        base64_chars = source.data.len(),
+                        pdf_bytes = bytes.len(),
+                        original_chars,
+                        extracted_chars,
+                        extracted = !text.is_empty(),
+                        "PDF text extraction result"
+                    );
+                    if !text.is_empty() {
+                        return Some(format!(
+                            "{} media_type={}
 {}",
-                        DOCUMENT_TEXT_PREFIX, source.media_type, text
-                    ));
+                            DOCUMENT_TEXT_PREFIX, source.media_type, text
+                        ));
+                    }
                 }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "document_shape",
+                        media_type = %source.media_type,
+                        base64_chars = source.data.len(),
+                        pdf_bytes = bytes.len(),
+                        extracted = false,
+                        error = %err,
+                        "PDF text extraction failed"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    target: "document_shape",
+                    media_type = %source.media_type,
+                    base64_chars = source.data.len(),
+                    extracted = false,
+                    error = %err,
+                    "PDF base64 decode failed"
+                );
             }
         }
     }
@@ -877,6 +932,77 @@ fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
     None
 }
 
+fn plain_text_content(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|item| {
+                if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    item.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn prompt_requests_structured_output(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+) -> bool {
+    if req.response_format.is_some() || req.tools.is_some() {
+        return false;
+    }
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    let text = plain_text_content(&last.content).to_lowercase();
+    if text.len() > 6000 {
+        return false;
+    }
+    let json_markers = [
+        "json",
+        "schema",
+        "结构化",
+        "格式",
+        "对象",
+        "字段",
+        "只返回",
+        "return only",
+        "valid json",
+        "json object",
+    ];
+    let has_json_marker = json_markers.iter().any(|m| text.contains(m));
+    let has_shape_hint = text.contains('{')
+        || text.contains('}')
+        || text.contains('[')
+        || text.contains(']')
+        || text.contains("key")
+        || text.contains("field")
+        || text.contains("字段");
+    has_json_marker && has_shape_hint
+}
+
+fn heuristic_structured_output_policy(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+) -> Option<String> {
+    if prompt_requests_structured_output(req, messages) {
+        Some(format!(
+            "{} The latest user request appears to ask for structured/JSON output. Satisfy that requested format exactly. If JSON is requested, return valid JSON only, without markdown fences or extra prose.",
+            STRUCTURED_OUTPUT_SYSTEM_PREFIX
+        ))
+    } else {
+        None
+    }
+}
+
 /// 检查内容是否已包含thinking标签
 fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
@@ -933,14 +1059,20 @@ fn build_history(
         }
     } else if let Some(ref prefix) = thinking_prefix {
         // 没有系统消息但有thinking配置，插入新的系统消息
-        let system_content = append_structured_output_policy(prefix.clone(), req);
+        let mut system_content = append_structured_output_policy(prefix.clone(), req);
+        if let Some(policy) = heuristic_structured_output_policy(req, messages) {
+            system_content.push('\n');
+            system_content.push_str(&policy);
+        }
         let user_msg = HistoryUserMessage::new(system_content, model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
         history.push(Message::Assistant(assistant_msg));
-    } else if let Some(policy) = structured_output_policy(req) {
-        // 仅当客户端明确请求 response_format 时加入局部结构化输出约束。
+    } else if let Some(policy) =
+        structured_output_policy(req).or_else(|| heuristic_structured_output_policy(req, messages))
+    {
+        // 仅当客户端明确请求 response_format，或最后一条用户消息明显要求 JSON/结构化输出时加入局部约束。
         let user_msg = HistoryUserMessage::new(policy, model_id);
         history.push(Message::User(user_msg));
 
@@ -1221,6 +1353,50 @@ mod tests {
         assert!(text.contains("Document text could not be extracted"));
         assert!(images.is_empty());
         assert!(tool_results.is_empty());
+    }
+
+    #[test]
+    fn test_prompt_requests_structured_output_detects_json_prompt() {
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![super::super::types::Message {
+                role: "user".to_string(),
+                content: serde_json::json!(
+                    "Return only valid JSON object with fields {\"ok\": true}"
+                ),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+        assert!(prompt_requests_structured_output(&req, &req.messages));
+    }
+
+    #[test]
+    fn test_prompt_requests_structured_output_ignores_normal_chat() {
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![super::super::types::Message {
+                role: "user".to_string(),
+                content: serde_json::json!("What is the capital of France?"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+        assert!(!prompt_requests_structured_output(&req, &req.messages));
     }
 
     #[test]
