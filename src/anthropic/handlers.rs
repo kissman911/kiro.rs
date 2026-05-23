@@ -172,24 +172,6 @@ pub async fn get_models() -> impl IntoResponse {
             max_tokens: 64000,
         },
         Model {
-            id: "claude-opus-4-7".to_string(),
-            object: "model".to_string(),
-            created: 1772992800, // Mar 7, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.7".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
-            id: "claude-opus-4-7-thinking".to_string(),
-            object: "model".to_string(),
-            created: 1772992800, // Mar 7, 2026
-            owned_by: "anthropic".to_string(),
-            display_name: "Claude Opus 4.7 (Thinking)".to_string(),
-            model_type: "chat".to_string(),
-            max_tokens: 64000,
-        },
-        Model {
             id: "claude-sonnet-4-6".to_string(),
             object: "model".to_string(),
             created: 1771286400, // Feb 17, 2026
