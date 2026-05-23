@@ -620,9 +620,9 @@ pub(crate) async fn build_non_stream_response_from_upstream(
                                 (context_usage.context_usage_percentage * (window_size as f64)
                                     / 100.0) as i32;
                             context_input_tokens = Some(actual_input_tokens);
-                            // 上下文使用量达到 100% 时，设置 stop_reason 为 model_context_window_exceeded
+                            // 上下文使用量达到 100% 时，设置 stop_reason 为 max_tokens
                             if context_usage.context_usage_percentage >= 100.0 {
-                                stop_reason = "model_context_window_exceeded".to_string();
+                                stop_reason = "max_tokens".to_string();
                             }
                             tracing::debug!(
                                 "收到 contextUsageEvent: {}%, 计算 input_tokens: {}",
