@@ -166,6 +166,9 @@ pub struct CurrentMessageData {
     pub tool_results: Vec<ToolResult>,
 }
 
+const DOCUMENT_TEXT_PREFIX: &str = "[Document attachment]";
+const STRUCTURED_OUTPUT_SYSTEM_PREFIX: &str = "Structured output requested by client.";
+
 fn validate_and_trim_messages<'a>(
     req: &'a MessagesRequest,
 ) -> Result<&'a [super::types::Message], ConversionError> {
@@ -430,6 +433,13 @@ fn process_message_content(
                                 }
                             }
                         }
+                        "document" => {
+                            if let Some(source) = block.source {
+                                if let Some(document_text) = document_source_to_text(&source) {
+                                    text_parts.push(document_text);
+                                }
+                            }
+                        }
                         "tool_result" => {
                             if let Some(tool_use_id) = block.tool_use_id {
                                 let result_content = extract_tool_result_content(&block.content);
@@ -458,6 +468,104 @@ fn process_message_content(
     }
 
     Ok((text_parts.join("\n"), images, tool_results))
+}
+
+fn document_source_to_text(source: &super::types::ContentSource) -> Option<String> {
+    if source.media_type == "text/plain" || source.media_type.starts_with("text/") {
+        if let Ok(bytes) = base64_decode(&source.data) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                return Some(format!(
+                    "{} media_type={}
+{}",
+                    DOCUMENT_TEXT_PREFIX, source.media_type, text
+                ));
+            }
+        }
+    }
+
+    // Kiro 当前请求模型只支持 text + images。PDF 不能假装原生透传；
+    // 保留附件事实，避免静默丢文档导致检测和用户请求无提示地失败。
+    Some(format!(
+        "{} media_type={} size_base64_chars={}
+[This document type is not natively supported by the Kiro upstream request format in this adapter. If you need to answer from it, ask the client to provide extracted text.]",
+        DOCUMENT_TEXT_PREFIX,
+        source.media_type,
+        source.data.len()
+    ))
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    const INVALID: u8 = 255;
+    fn val(b: u8) -> u8 {
+        match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => INVALID,
+        }
+    }
+
+    let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return Err("invalid base64 length".to_string());
+    }
+
+    let mut out = Vec::with_capacity(clean.len() / 4 * 3);
+    for chunk in clean.chunks(4) {
+        let pad = chunk.iter().rev().take_while(|&&b| b == b'=').count();
+        let a = val(chunk[0]);
+        let b = val(chunk[1]);
+        let c = if chunk[2] == b'=' { 0 } else { val(chunk[2]) };
+        let d = if chunk[3] == b'=' { 0 } else { val(chunk[3]) };
+        if a == INVALID || b == INVALID || c == INVALID || d == INVALID || pad > 2 {
+            return Err("invalid base64 character".to_string());
+        }
+        out.push((a << 2) | (b >> 4));
+        if pad < 2 {
+            out.push((b << 4) | (c >> 2));
+        }
+        if pad < 1 {
+            out.push((c << 6) | d);
+        }
+    }
+    Ok(out)
+}
+
+fn structured_output_policy(req: &MessagesRequest) -> Option<String> {
+    let format = req.response_format.as_ref()?;
+    let format_type = format
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+
+    match format_type {
+        "json_object" => Some(format!(
+            "{} Return only one valid JSON object. Do not wrap it in markdown. Do not include prose before or after the JSON.",
+            STRUCTURED_OUTPUT_SYSTEM_PREFIX
+        )),
+        "json_schema" => {
+            let schema = format
+                .get("json_schema")
+                .and_then(|v| v.get("schema").or(Some(v)))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            Some(format!(
+                "{} Return only JSON that conforms to this JSON Schema. Do not wrap it in markdown. Do not include prose before or after the JSON. Schema: {}",
+                STRUCTURED_OUTPUT_SYSTEM_PREFIX, schema
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn append_structured_output_policy(mut system_content: String, req: &MessagesRequest) -> String {
+    if let Some(policy) = structured_output_policy(req) {
+        system_content.push('\n');
+        system_content.push_str(&policy);
+    }
+    system_content
 }
 
 /// 从 media_type 获取图片格式
@@ -760,7 +868,15 @@ fn build_history(
         }
     } else if let Some(ref prefix) = thinking_prefix {
         // 没有系统消息但有thinking配置，插入新的系统消息
-        let user_msg = HistoryUserMessage::new(prefix.clone(), model_id);
+        let system_content = append_structured_output_policy(prefix.clone(), req);
+        let user_msg = HistoryUserMessage::new(system_content, model_id);
+        history.push(Message::User(user_msg));
+
+        let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
+        history.push(Message::Assistant(assistant_msg));
+    } else if let Some(policy) = structured_output_policy(req) {
+        // 仅当客户端明确请求 response_format 时加入局部结构化输出约束。
+        let user_msg = HistoryUserMessage::new(policy, model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
@@ -1000,6 +1116,85 @@ mod tests {
     }
 
     #[test]
+    fn test_process_message_content_text_document() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "Please read this."},
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "text/plain",
+                    "data": "SGVsbG8gZG9jdW1lbnQ="
+                }
+            }
+        ]);
+
+        let (text, images, tool_results) = process_message_content(&content).unwrap();
+        assert!(text.contains("Please read this."));
+        assert!(text.contains(DOCUMENT_TEXT_PREFIX));
+        assert!(text.contains("Hello document"));
+        assert!(images.is_empty());
+        assert!(tool_results.is_empty());
+    }
+
+    #[test]
+    fn test_process_message_content_pdf_document_not_silently_dropped() {
+        let content = serde_json::json!([
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0xLjQ="
+                }
+            }
+        ]);
+
+        let (text, images, tool_results) = process_message_content(&content).unwrap();
+        assert!(text.contains(DOCUMENT_TEXT_PREFIX));
+        assert!(text.contains("application/pdf"));
+        assert!(text.contains("not natively supported"));
+        assert!(images.is_empty());
+        assert!(tool_results.is_empty());
+    }
+
+    #[test]
+    fn test_structured_output_policy_json_schema() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("Return data"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "result",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"]
+                    }
+                }
+            })),
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+
+        let policy = structured_output_policy(&req).unwrap();
+        assert!(policy.contains("Return only JSON"));
+        assert!(policy.contains("\"ok\""));
+    }
+
+    #[test]
     fn test_context_window_opus_4_7() {
         assert_eq!(
             get_context_window_size("claude-opus-4-7-20260501"),
@@ -1081,6 +1276,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
         assert_eq!(determine_chat_trigger_type(&req), "MANUAL");
     }
@@ -1200,6 +1396,7 @@ mod tests {
             tool_choice: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1268,6 +1465,7 @@ mod tests {
             tool_choice: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1325,6 +1523,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1413,6 +1612,7 @@ mod tests {
                     "user_0dede55c6dcc4a11a30bbb5e7f22e6fdf86cdeba3820019cc27612af4e1243cd_account__session_a0662283-7fd3-4399-a7eb-52b9a717ae88".to_string(),
                 ),
             }),
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1441,6 +1641,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1877,6 +2078,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req);
