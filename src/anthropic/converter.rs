@@ -483,15 +483,38 @@ fn document_source_to_text(source: &super::types::ContentSource) -> Option<Strin
         }
     }
 
-    // Kiro 当前请求模型只支持 text + images。PDF 不能假装原生透传；
-    // 保留附件事实，避免静默丢文档导致检测和用户请求无提示地失败。
+    if source.media_type == "application/pdf" {
+        if let Ok(bytes) = base64_decode(&source.data) {
+            if let Ok(text) = pdf_extract::extract_text_from_mem(&bytes) {
+                let text = truncate_document_text(text.trim());
+                if !text.is_empty() {
+                    return Some(format!(
+                        "{} media_type={}
+{}",
+                        DOCUMENT_TEXT_PREFIX, source.media_type, text
+                    ));
+                }
+            }
+        }
+    }
+
+    // Kiro 当前请求模型只支持 text + images。不能原生转发的文档保留附件事实，
+    // 避免静默丢文档；同时不再要求模型“请用户提供文本”，减少检测/问答污染。
     Some(format!(
         "{} media_type={} size_base64_chars={}
-[This document type is not natively supported by the Kiro upstream request format in this adapter. If you need to answer from it, ask the client to provide extracted text.]",
+[Document text could not be extracted by the adapter.]",
         DOCUMENT_TEXT_PREFIX,
         source.media_type,
         source.data.len()
     ))
+}
+
+fn truncate_document_text(text: &str) -> String {
+    const MAX_DOCUMENT_CHARS: usize = 80_000;
+    match text.char_indices().nth(MAX_DOCUMENT_CHARS) {
+        Some((idx, _)) => text[..idx].to_string(),
+        None => text.to_string(),
+    }
 }
 
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
@@ -551,13 +574,55 @@ fn structured_output_policy(req: &MessagesRequest) -> Option<String> {
                 .and_then(|v| v.get("schema").or(Some(v)))
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
+            let schema_prompt = build_json_schema_prompt(&schema);
             Some(format!(
-                "{} Return only JSON that conforms to this JSON Schema. Do not wrap it in markdown. Do not include prose before or after the JSON. Schema: {}",
-                STRUCTURED_OUTPUT_SYSTEM_PREFIX, schema
+                "{} Return only JSON that conforms to this JSON Schema. Do not wrap it in markdown. Do not include prose before or after the JSON. Schema: {}{}",
+                STRUCTURED_OUTPUT_SYSTEM_PREFIX, schema, schema_prompt
             ))
         }
         _ => None,
     }
+}
+
+fn build_json_schema_prompt(schema: &serde_json::Value) -> String {
+    let Some(obj) = schema.as_object() else {
+        return String::new();
+    };
+    let Some(properties) = obj.get("properties").and_then(|v| v.as_object()) else {
+        return String::new();
+    };
+
+    let required: Vec<String> = obj
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut hints = Vec::new();
+    for (name, prop) in properties {
+        let typ = prop.get("type").and_then(|v| v.as_str()).unwrap_or("value");
+        let desc = prop
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        hints.push(format!("- {}: {} {}", name, typ, desc).trim().to_string());
+    }
+
+    let mut prompt = String::new();
+    if !required.is_empty() {
+        prompt.push_str(" Required keys: ");
+        prompt.push_str(&required.join(", "));
+        prompt.push('.');
+    }
+    if !hints.is_empty() {
+        prompt.push_str(" Field guide: ");
+        prompt.push_str(&hints.join("; "));
+    }
+    prompt
 }
 
 fn append_structured_output_policy(mut system_content: String, req: &MessagesRequest) -> String {
@@ -1153,7 +1218,7 @@ mod tests {
         let (text, images, tool_results) = process_message_content(&content).unwrap();
         assert!(text.contains(DOCUMENT_TEXT_PREFIX));
         assert!(text.contains("application/pdf"));
-        assert!(text.contains("not natively supported"));
+        assert!(text.contains("Document text could not be extracted"));
         assert!(images.is_empty());
         assert!(tool_results.is_empty());
     }
