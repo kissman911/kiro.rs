@@ -251,6 +251,78 @@ pub async fn get_models() -> impl IntoResponse {
     })
 }
 
+fn content_shape(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(_) => "string".to_string(),
+        serde_json::Value::Array(arr) => {
+            let mut parts = Vec::new();
+            for item in arr {
+                let block_type = item
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let media_type = item
+                    .get("source")
+                    .and_then(|s| s.get("media_type"))
+                    .and_then(|v| v.as_str());
+                if let Some(media_type) = media_type {
+                    parts.push(format!("{}:{}", block_type, media_type));
+                } else {
+                    parts.push(block_type.to_string());
+                }
+            }
+            format!("array[{}]", parts.join(","))
+        }
+        _ => "other".to_string(),
+    }
+}
+
+fn response_format_shape(value: &Option<serde_json::Value>) -> String {
+    let Some(value) = value else {
+        return "none".to_string();
+    };
+    let format_type = value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let schema_name = value
+        .get("json_schema")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if schema_name.is_empty() {
+        format_type.to_string()
+    } else {
+        format!("{}:{}", format_type, schema_name)
+    }
+}
+
+fn log_request_shape(label: &str, payload: &MessagesRequest) {
+    let content_shapes: Vec<String> = payload
+        .messages
+        .iter()
+        .map(|m| format!("{}={}", m.role, content_shape(&m.content)))
+        .collect();
+    let tool_names: Vec<String> = payload
+        .tools
+        .as_ref()
+        .map(|tools| tools.iter().map(|t| t.name.clone()).collect())
+        .unwrap_or_default();
+    tracing::info!(
+        target: "request_shape",
+        endpoint = label,
+        model = %payload.model,
+        stream = payload.stream,
+        message_count = payload.messages.len(),
+        response_format = %response_format_shape(&payload.response_format),
+        tool_count = payload.tools.as_ref().map(|t| t.len()).unwrap_or(0),
+        tool_names = %tool_names.join(","),
+        tool_choice = %payload.tool_choice.as_ref().map(|v| v.get("type").and_then(|t| t.as_str()).unwrap_or("present")).unwrap_or("none"),
+        content_shapes = %content_shapes.join("|"),
+        "Anthropic request shape"
+    );
+}
+
 /// POST /v1/messages
 ///
 /// 创建消息（对话）
@@ -265,6 +337,7 @@ pub async fn post_messages(
         message_count = %payload.messages.len(),
         "Received POST /v1/messages request"
     );
+    log_request_shape("/v1/messages", &payload);
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
         Some(p) => p.clone(),
@@ -802,6 +875,7 @@ pub async fn post_messages_cc(
         message_count = %payload.messages.len(),
         "Received POST /cc/v1/messages request"
     );
+    log_request_shape("/cc/v1/messages", &payload);
 
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
