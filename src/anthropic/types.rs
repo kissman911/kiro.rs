@@ -8,6 +8,8 @@ use std::collections::HashMap;
 /// API 错误响应
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
+    #[serde(rename = "type")]
+    pub response_type: String,
     pub error: ErrorDetail,
 }
 
@@ -23,6 +25,7 @@ impl ErrorResponse {
     /// 创建新的错误响应
     pub fn new(error_type: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
+            response_type: "error".to_string(),
             error: ErrorDetail {
                 error_type: error_type.into(),
                 message: message.into(),
@@ -124,6 +127,9 @@ pub struct MessagesRequest {
     pub system: Option<Vec<SystemMessage>>,
     pub tools: Option<Vec<Tool>>,
     pub tool_choice: Option<serde_json::Value>,
+    /// OpenAI/NewAPI 结构化输出兼容字段。Anthropic Messages API 本身不定义该字段，
+    /// 但 New API 可能会透传 json_object/json_schema 请求到这里。仅在存在时按需启用。
+    pub response_format: Option<serde_json::Value>,
     pub thinking: Option<Thinking>,
     pub output_config: Option<OutputConfig>,
     /// Claude Code 请求中的 metadata，包含 session 信息
@@ -247,12 +253,12 @@ pub struct ContentBlock {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<ImageSource>,
+    pub source: Option<ContentSource>,
 }
 
-/// 图片数据源
+/// 图片/文档数据源
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ImageSource {
+pub struct ContentSource {
     #[serde(rename = "type")]
     pub source_type: String,
     pub media_type: String,

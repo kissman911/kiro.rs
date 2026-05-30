@@ -166,6 +166,9 @@ pub struct CurrentMessageData {
     pub tool_results: Vec<ToolResult>,
 }
 
+const DOCUMENT_TEXT_PREFIX: &str = "[Document attachment]";
+const STRUCTURED_OUTPUT_SYSTEM_PREFIX: &str = "Structured output requested by client.";
+
 fn validate_and_trim_messages<'a>(
     req: &'a MessagesRequest,
 ) -> Result<&'a [super::types::Message], ConversionError> {
@@ -430,6 +433,13 @@ fn process_message_content(
                                 }
                             }
                         }
+                        "document" => {
+                            if let Some(source) = block.source {
+                                if let Some(document_text) = document_source_to_text(&source) {
+                                    text_parts.push(document_text);
+                                }
+                            }
+                        }
                         "tool_result" => {
                             if let Some(tool_use_id) = block.tool_use_id {
                                 let result_content = extract_tool_result_content(&block.content);
@@ -458,6 +468,224 @@ fn process_message_content(
     }
 
     Ok((text_parts.join("\n"), images, tool_results))
+}
+
+fn document_source_to_text(source: &super::types::ContentSource) -> Option<String> {
+    if source.media_type == "text/plain" || source.media_type.starts_with("text/") {
+        match base64_decode(&source.data)
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
+        {
+            Ok(text) => {
+                tracing::info!(
+                    target: "document_shape",
+                    media_type = %source.media_type,
+                    base64_chars = source.data.len(),
+                    extracted_chars = text.chars().count(),
+                    extracted = true,
+                    "Document text extracted"
+                );
+                return Some(format!(
+                    "{} media_type={}
+{}",
+                    DOCUMENT_TEXT_PREFIX, source.media_type, text
+                ));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "document_shape",
+                    media_type = %source.media_type,
+                    base64_chars = source.data.len(),
+                    extracted = false,
+                    error = %err,
+                    "Document text extraction failed"
+                );
+            }
+        }
+    }
+
+    if source.media_type == "application/pdf" {
+        match base64_decode(&source.data) {
+            Ok(bytes) => match pdf_extract::extract_text_from_mem(&bytes) {
+                Ok(text) => {
+                    let original_chars = text.chars().count();
+                    let text = truncate_document_text(text.trim());
+                    let extracted_chars = text.chars().count();
+                    tracing::info!(
+                        target: "document_shape",
+                        media_type = %source.media_type,
+                        base64_chars = source.data.len(),
+                        pdf_bytes = bytes.len(),
+                        original_chars,
+                        extracted_chars,
+                        extracted = !text.is_empty(),
+                        "PDF text extraction result"
+                    );
+                    if !text.is_empty() {
+                        return Some(format!(
+                            "{} media_type={}
+{}",
+                            DOCUMENT_TEXT_PREFIX, source.media_type, text
+                        ));
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "document_shape",
+                        media_type = %source.media_type,
+                        base64_chars = source.data.len(),
+                        pdf_bytes = bytes.len(),
+                        extracted = false,
+                        error = %err,
+                        "PDF text extraction failed"
+                    );
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    target: "document_shape",
+                    media_type = %source.media_type,
+                    base64_chars = source.data.len(),
+                    extracted = false,
+                    error = %err,
+                    "PDF base64 decode failed"
+                );
+            }
+        }
+    }
+
+    // Kiro 当前请求模型只支持 text + images。不能原生转发的文档保留附件事实，
+    // 避免静默丢文档；同时不再要求模型“请用户提供文本”，减少检测/问答污染。
+    Some(format!(
+        "{} media_type={} size_base64_chars={}
+[Document text could not be extracted by the adapter.]",
+        DOCUMENT_TEXT_PREFIX,
+        source.media_type,
+        source.data.len()
+    ))
+}
+
+fn truncate_document_text(text: &str) -> String {
+    const MAX_DOCUMENT_CHARS: usize = 80_000;
+    match text.char_indices().nth(MAX_DOCUMENT_CHARS) {
+        Some((idx, _)) => text[..idx].to_string(),
+        None => text.to_string(),
+    }
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    const INVALID: u8 = 255;
+    fn val(b: u8) -> u8 {
+        match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => INVALID,
+        }
+    }
+
+    let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return Err("invalid base64 length".to_string());
+    }
+
+    let mut out = Vec::with_capacity(clean.len() / 4 * 3);
+    for chunk in clean.chunks(4) {
+        let pad = chunk.iter().rev().take_while(|&&b| b == b'=').count();
+        let a = val(chunk[0]);
+        let b = val(chunk[1]);
+        let c = if chunk[2] == b'=' { 0 } else { val(chunk[2]) };
+        let d = if chunk[3] == b'=' { 0 } else { val(chunk[3]) };
+        if a == INVALID || b == INVALID || c == INVALID || d == INVALID || pad > 2 {
+            return Err("invalid base64 character".to_string());
+        }
+        out.push((a << 2) | (b >> 4));
+        if pad < 2 {
+            out.push((b << 4) | (c >> 2));
+        }
+        if pad < 1 {
+            out.push((c << 6) | d);
+        }
+    }
+    Ok(out)
+}
+
+fn structured_output_policy(req: &MessagesRequest) -> Option<String> {
+    let format = req.response_format.as_ref()?;
+    let format_type = format
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+
+    match format_type {
+        "json_object" => Some(format!(
+            "{} Return only one valid JSON object. Do not wrap it in markdown. Do not include prose before or after the JSON.",
+            STRUCTURED_OUTPUT_SYSTEM_PREFIX
+        )),
+        "json_schema" => {
+            let schema = format
+                .get("json_schema")
+                .and_then(|v| v.get("schema").or(Some(v)))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let schema_prompt = build_json_schema_prompt(&schema);
+            Some(format!(
+                "{} Return only JSON that conforms to this JSON Schema. Do not wrap it in markdown. Do not include prose before or after the JSON. Schema: {}{}",
+                STRUCTURED_OUTPUT_SYSTEM_PREFIX, schema, schema_prompt
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn build_json_schema_prompt(schema: &serde_json::Value) -> String {
+    let Some(obj) = schema.as_object() else {
+        return String::new();
+    };
+    let Some(properties) = obj.get("properties").and_then(|v| v.as_object()) else {
+        return String::new();
+    };
+
+    let required: Vec<String> = obj
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut hints = Vec::new();
+    for (name, prop) in properties {
+        let typ = prop.get("type").and_then(|v| v.as_str()).unwrap_or("value");
+        let desc = prop
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        hints.push(format!("- {}: {} {}", name, typ, desc).trim().to_string());
+    }
+
+    let mut prompt = String::new();
+    if !required.is_empty() {
+        prompt.push_str(" Required keys: ");
+        prompt.push_str(&required.join(", "));
+        prompt.push('.');
+    }
+    if !hints.is_empty() {
+        prompt.push_str(" Field guide: ");
+        prompt.push_str(&hints.join("; "));
+    }
+    prompt
+}
+
+fn append_structured_output_policy(mut system_content: String, req: &MessagesRequest) -> String {
+    if let Some(policy) = structured_output_policy(req) {
+        system_content.push('\n');
+        system_content.push_str(&policy);
+    }
+    system_content
 }
 
 /// 从 media_type 获取图片格式
@@ -704,6 +932,77 @@ fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
     None
 }
 
+fn plain_text_content(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|item| {
+                if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    item.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn prompt_requests_structured_output(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+) -> bool {
+    if req.response_format.is_some() || req.tools.is_some() {
+        return false;
+    }
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    let text = plain_text_content(&last.content).to_lowercase();
+    if text.len() > 6000 {
+        return false;
+    }
+    let json_markers = [
+        "json",
+        "schema",
+        "结构化",
+        "格式",
+        "对象",
+        "字段",
+        "只返回",
+        "return only",
+        "valid json",
+        "json object",
+    ];
+    let has_json_marker = json_markers.iter().any(|m| text.contains(m));
+    let has_shape_hint = text.contains('{')
+        || text.contains('}')
+        || text.contains('[')
+        || text.contains(']')
+        || text.contains("key")
+        || text.contains("field")
+        || text.contains("字段");
+    has_json_marker && has_shape_hint
+}
+
+fn heuristic_structured_output_policy(
+    req: &MessagesRequest,
+    messages: &[super::types::Message],
+) -> Option<String> {
+    if prompt_requests_structured_output(req, messages) {
+        Some(format!(
+            "{} The latest user request appears to ask for structured/JSON output. Satisfy that requested format exactly. If JSON is requested, return valid JSON only, without markdown fences or extra prose.",
+            STRUCTURED_OUTPUT_SYSTEM_PREFIX
+        ))
+    } else {
+        None
+    }
+}
+
 /// 检查内容是否已包含thinking标签
 fn has_thinking_tags(content: &str) -> bool {
     content.contains("<thinking_mode>") || content.contains("<max_thinking_length>")
@@ -760,7 +1059,21 @@ fn build_history(
         }
     } else if let Some(ref prefix) = thinking_prefix {
         // 没有系统消息但有thinking配置，插入新的系统消息
-        let user_msg = HistoryUserMessage::new(prefix.clone(), model_id);
+        let mut system_content = append_structured_output_policy(prefix.clone(), req);
+        if let Some(policy) = heuristic_structured_output_policy(req, messages) {
+            system_content.push('\n');
+            system_content.push_str(&policy);
+        }
+        let user_msg = HistoryUserMessage::new(system_content, model_id);
+        history.push(Message::User(user_msg));
+
+        let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
+        history.push(Message::Assistant(assistant_msg));
+    } else if let Some(policy) =
+        structured_output_policy(req).or_else(|| heuristic_structured_output_policy(req, messages))
+    {
+        // 仅当客户端明确请求 response_format，或最后一条用户消息明显要求 JSON/结构化输出时加入局部约束。
+        let user_msg = HistoryUserMessage::new(policy, model_id);
         history.push(Message::User(user_msg));
 
         let assistant_msg = HistoryAssistantMessage::new("I will follow these instructions.");
@@ -1000,6 +1313,129 @@ mod tests {
     }
 
     #[test]
+    fn test_process_message_content_text_document() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "Please read this."},
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "text/plain",
+                    "data": "SGVsbG8gZG9jdW1lbnQ="
+                }
+            }
+        ]);
+
+        let (text, images, tool_results) = process_message_content(&content).unwrap();
+        assert!(text.contains("Please read this."));
+        assert!(text.contains(DOCUMENT_TEXT_PREFIX));
+        assert!(text.contains("Hello document"));
+        assert!(images.is_empty());
+        assert!(tool_results.is_empty());
+    }
+
+    #[test]
+    fn test_process_message_content_pdf_document_not_silently_dropped() {
+        let content = serde_json::json!([
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": "JVBERi0xLjQ="
+                }
+            }
+        ]);
+
+        let (text, images, tool_results) = process_message_content(&content).unwrap();
+        assert!(text.contains(DOCUMENT_TEXT_PREFIX));
+        assert!(text.contains("application/pdf"));
+        assert!(text.contains("Document text could not be extracted"));
+        assert!(images.is_empty());
+        assert!(tool_results.is_empty());
+    }
+
+    #[test]
+    fn test_prompt_requests_structured_output_detects_json_prompt() {
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![super::super::types::Message {
+                role: "user".to_string(),
+                content: serde_json::json!(
+                    "Return only valid JSON object with fields {\"ok\": true}"
+                ),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+        assert!(prompt_requests_structured_output(&req, &req.messages));
+    }
+
+    #[test]
+    fn test_prompt_requests_structured_output_ignores_normal_chat() {
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![super::super::types::Message {
+                role: "user".to_string(),
+                content: serde_json::json!("What is the capital of France?"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+        assert!(!prompt_requests_structured_output(&req, &req.messages));
+    }
+
+    #[test]
+    fn test_structured_output_policy_json_schema() {
+        use super::super::types::Message as AnthropicMessage;
+
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("Return data"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "result",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"]
+                    }
+                }
+            })),
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+
+        let policy = structured_output_policy(&req).unwrap();
+        assert!(policy.contains("Return only JSON"));
+        assert!(policy.contains("\"ok\""));
+    }
+
+    #[test]
     fn test_context_window_opus_4_7() {
         assert_eq!(
             get_context_window_size("claude-opus-4-7-20260501"),
@@ -1081,6 +1517,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
         assert_eq!(determine_chat_trigger_type(&req), "MANUAL");
     }
@@ -1200,6 +1637,7 @@ mod tests {
             tool_choice: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1268,6 +1706,7 @@ mod tests {
             tool_choice: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1325,6 +1764,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1413,6 +1853,7 @@ mod tests {
                     "user_0dede55c6dcc4a11a30bbb5e7f22e6fdf86cdeba3820019cc27612af4e1243cd_account__session_a0662283-7fd3-4399-a7eb-52b9a717ae88".to_string(),
                 ),
             }),
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1441,6 +1882,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req).unwrap();
@@ -1877,6 +2319,7 @@ mod tests {
             thinking: None,
             output_config: None,
             metadata: None,
+            response_format: None,
         };
 
         let result = convert_request(&req);

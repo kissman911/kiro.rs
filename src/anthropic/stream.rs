@@ -450,7 +450,7 @@ impl SseStateManager {
     /// 生成最终事件序列
     pub fn generate_final_events(
         &mut self,
-        input_tokens: i32,
+        _input_tokens: i32,
         output_tokens: i32,
     ) -> Vec<SseEvent> {
         let mut events = Vec::new();
@@ -481,7 +481,6 @@ impl SseStateManager {
                         "stop_sequence": null
                     },
                     "usage": {
-                        "input_tokens": input_tokens,
                         "output_tokens": output_tokens
                     }
                 }),
@@ -635,10 +634,9 @@ impl StreamContext {
                 let actual_input_tokens =
                     (context_usage.context_usage_percentage * (window_size as f64) / 100.0) as i32;
                 self.context_input_tokens = Some(actual_input_tokens);
-                // 上下文使用量达到 100% 时，设置 stop_reason 为 model_context_window_exceeded
+                // 上下文使用量达到 100% 时，设置 stop_reason 为 max_tokens
                 if context_usage.context_usage_percentage >= 100.0 {
-                    self.state_manager
-                        .set_stop_reason("model_context_window_exceeded");
+                    self.state_manager.set_stop_reason("max_tokens");
                 }
                 tracing::debug!(
                     "收到 contextUsageEvent: {}%, 计算 input_tokens: {}",
