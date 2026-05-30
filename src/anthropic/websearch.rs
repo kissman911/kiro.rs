@@ -573,6 +573,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -612,6 +613,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -640,6 +642,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -666,6 +669,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };

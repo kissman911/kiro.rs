@@ -752,7 +752,8 @@ pub(crate) async fn build_non_stream_response_from_upstream(
         if let Some(thinking_text) = thinking {
             content.push(json!({
                 "type": "thinking",
-                "thinking": thinking_text
+                "thinking": thinking_text,
+                "signature": ""
             }));
         }
 
@@ -821,19 +822,23 @@ pub(crate) async fn handle_non_stream_request(
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
 ///
-/// - Opus 4.6：覆写为 adaptive 类型
-/// - 其他模型：覆写为 enabled 类型
-/// - budget_tokens 固定为 20000
+/// - Opus 4.8 / 4.7：只支持 adaptive thinking，不能使用 enabled + budget_tokens
+/// - Opus 4.6 / Sonnet 4.6：优先使用 adaptive thinking
+/// - 旧模型：继续使用 enabled + budget_tokens
 fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     let model_lower = payload.model.to_lowercase();
     if !model_lower.contains("thinking") {
         return;
     }
 
-    let is_opus_4_6 = model_lower.contains("opus")
-        && (model_lower.contains("4-6") || model_lower.contains("4.6"));
+    let is_opus = model_lower.contains("opus");
+    let is_sonnet = model_lower.contains("sonnet");
+    let is_4_8 = model_lower.contains("4-8") || model_lower.contains("4.8");
+    let is_4_7 = model_lower.contains("4-7") || model_lower.contains("4.7");
+    let is_4_6 = model_lower.contains("4-6") || model_lower.contains("4.6");
+    let use_adaptive = (is_opus && (is_4_8 || is_4_7 || is_4_6)) || (is_sonnet && is_4_6);
 
-    let thinking_type = if is_opus_4_6 { "adaptive" } else { "enabled" };
+    let thinking_type = if use_adaptive { "adaptive" } else { "enabled" };
 
     tracing::info!(
         model = %payload.model,
@@ -843,13 +848,18 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
 
     payload.thinking = Some(Thinking {
         thinking_type: thinking_type.to_string(),
+        // adaptive 模式不会向上游发送 budget_tokens；这里保留默认值仅满足内部结构。
         budget_tokens: 20000,
     });
 
-    if is_opus_4_6 {
-        payload.output_config = Some(OutputConfig {
-            effort: "high".to_string(),
-        });
+    if use_adaptive {
+        let effort = payload
+            .effort
+            .as_ref()
+            .map(|e| e.level.clone())
+            .or_else(|| payload.output_config.as_ref().map(|c| c.effort.clone()))
+            .unwrap_or_else(|| "high".to_string());
+        payload.output_config = Some(OutputConfig { effort });
     }
 }
 

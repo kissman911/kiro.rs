@@ -107,6 +107,14 @@ fn default_effort() -> String {
     "high".to_string()
 }
 
+/// Claude 新版输出配置可能使用的扁平 effort 字段。
+/// 当前 Kiro 适配层会把它合并进 output_config.effort。
+#[derive(Debug, Deserialize, Clone)]
+pub struct EffortConfig {
+    #[serde(default = "default_effort")]
+    pub level: String,
+}
+
 /// Claude Code 请求中的 metadata
 #[derive(Debug, Clone, Deserialize)]
 pub struct Metadata {
@@ -132,6 +140,7 @@ pub struct MessagesRequest {
     pub response_format: Option<serde_json::Value>,
     pub thinking: Option<Thinking>,
     pub output_config: Option<OutputConfig>,
+    pub effort: Option<EffortConfig>,
     /// Claude Code 请求中的 metadata，包含 session 信息
     pub metadata: Option<Metadata>,
 }
@@ -240,6 +249,10 @@ pub struct ContentBlock {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted_thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_use_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

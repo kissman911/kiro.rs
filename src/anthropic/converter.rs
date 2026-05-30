@@ -1190,6 +1190,14 @@ fn convert_assistant_message(
                             if let Some(thinking) = block.thinking {
                                 thinking_content.push_str(&thinking);
                             }
+                            // Opus 4.8/4.7 thinking blocks may include a signature field.
+                            // Kiro history only accepts text content, so we intentionally
+                            // ignore the signature while preserving the thinking text.
+                        }
+                        "redacted_thinking" => {
+                            if let Some(redacted) = block.redacted_thinking {
+                                thinking_content.push_str(&redacted);
+                            }
                         }
                         "text" => {
                             if let Some(text) = block.text {
@@ -1374,6 +1382,7 @@ mod tests {
             response_format: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
         };
         assert!(prompt_requests_structured_output(&req, &req.messages));
@@ -1395,6 +1404,7 @@ mod tests {
             response_format: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
         };
         assert!(!prompt_requests_structured_output(&req, &req.messages));
@@ -1428,6 +1438,7 @@ mod tests {
             })),
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
         };
 
@@ -1534,6 +1545,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -1654,6 +1666,7 @@ mod tests {
             thinking: None,
             tool_choice: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -1723,6 +1736,7 @@ mod tests {
             thinking: None,
             tool_choice: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -1781,6 +1795,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -1866,6 +1881,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: Some(Metadata {
                 user_id: Some(
                     "user_0dede55c6dcc4a11a30bbb5e7f22e6fdf86cdeba3820019cc27612af4e1243cd_account__session_a0662283-7fd3-4399-a7eb-52b9a717ae88".to_string(),
@@ -1899,6 +1915,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
@@ -2336,6 +2353,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            effort: None,
             metadata: None,
             response_format: None,
         };
