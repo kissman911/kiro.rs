@@ -23,19 +23,40 @@ pub fn app_version_info() -> AppVersionInfo {
         .replace("\\n", "\n");
     let value = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
 
+    let build_tag = option_env!("KISSAPI_BUILD_TAG")
+        .unwrap_or("local")
+        .to_string();
+    let git_sha = option_env!("KISSAPI_GIT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let version_from_file = read_string(&value, "version", env!("CARGO_PKG_VERSION"));
+    let codename_from_file = read_string(&value, "codename", "local");
+
     AppVersionInfo {
-        version: read_string(&value, "version", env!("CARGO_PKG_VERSION")),
+        // Prefer the immutable Docker/image build tag for beta/CI images so the Admin UI
+        // automatically changes on every container update. Release images can still show
+        // VERSION.json when no build tag is injected.
+        version: if build_tag == "local" {
+            version_from_file
+        } else {
+            build_tag.clone()
+        },
         channel: read_string(&value, "channel", "kissapi"),
-        codename: read_string(&value, "codename", "local"),
+        codename: if build_tag == "local" {
+            codename_from_file
+        } else {
+            let short_sha: String = git_sha.chars().take(7).collect();
+            if short_sha.is_empty() || short_sha == "unknown" {
+                "container-build".to_string()
+            } else {
+                format!("container-build {}", short_sha)
+            }
+        },
         date: read_string(&value, "date", "unknown"),
         summary: read_string(&value, "summary", "KissAPI kiro-rs custom build"),
         package_version: env!("CARGO_PKG_VERSION").to_string(),
-        git_sha: option_env!("KISSAPI_GIT_SHA")
-            .unwrap_or("unknown")
-            .to_string(),
-        build_tag: option_env!("KISSAPI_BUILD_TAG")
-            .unwrap_or("local")
-            .to_string(),
+        git_sha,
+        build_tag,
         changelog: option_env!("KISSAPI_CHANGELOG")
             .unwrap_or("")
             .replace("\\n", "\n"),
