@@ -107,7 +107,6 @@ export interface AddCredentialRequest {
   authRegion?: string
   apiRegion?: string
   machineId?: string
-  profileArn?: string
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string

@@ -1448,7 +1448,7 @@ impl MultiTokenManager {
             .is_none_or(|v| v.trim().is_empty())
         {
             anyhow::bail!(
-                "凭据缺少 profileArn，且自动调用 ListAvailableProfiles / refreshToken 后仍无法解析；请检查该 Builder-ID 凭据是否有可用 CodeWhisperer profile，或从 KAM 导出中手动补入 profileArn"
+                "凭据缺少 profileArn，且自动调用 ListAvailableProfiles / refreshToken 后仍无法解析；请检查该 Builder-ID/IdC 凭据是否有可用 CodeWhisperer profile，或 token/region/proxy 是否可访问 management.*.kiro.dev"
             );
         }
 
@@ -2439,13 +2439,6 @@ impl MultiTokenManager {
         validated_cred.auth_region = new_cred.auth_region;
         validated_cred.api_region = new_cred.api_region;
         validated_cred.machine_id = new_cred.machine_id;
-        if new_cred
-            .profile_arn
-            .as_deref()
-            .is_some_and(|v| !v.trim().is_empty())
-        {
-            validated_cred.profile_arn = new_cred.profile_arn;
-        }
         validated_cred.email = new_cred.email;
         validated_cred.proxy_url = new_cred.proxy_url;
         validated_cred.proxy_username = new_cred.proxy_username;
@@ -2459,7 +2452,7 @@ impl MultiTokenManager {
                 .is_none_or(|v| v.trim().is_empty())
         {
             anyhow::bail!(
-                "Builder-ID/IdC 凭据缺少 profileArn；当前账号的 ListAvailableProfiles 不可访问，请从 KAM 导出里带上 profileArn 后再添加"
+                "Builder-ID/IdC 凭据缺少 profileArn，且自动调用 ListAvailableProfiles / refreshToken 后仍无法解析；请检查该账号是否有可用 CodeWhisperer profile，或 token/region/proxy 是否可访问 management.*.kiro.dev"
             );
         }
 

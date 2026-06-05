@@ -164,9 +164,6 @@ pub struct AddCredentialRequest {
     /// 未配置时回退到 config.json 的 machineId
     pub machine_id: Option<String>,
 
-    /// Profile ARN（Kiro runtime / management 请求需要）
-    pub profile_arn: Option<String>,
-
     /// 用户邮箱（可选，用于前端显示）
     pub email: Option<String>,
 

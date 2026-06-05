@@ -29,7 +29,6 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [clientSecret, setClientSecret] = useState('')
   const [priority, setPriority] = useState('0')
   const [machineId, setMachineId] = useState('')
-  const [profileArn, setProfileArn] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
@@ -50,7 +49,6 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setClientSecret('')
     setPriority('0')
     setMachineId('')
-    setProfileArn('')
     setProxyUrl('')
     setProxyUsername('')
     setProxyPassword('')
@@ -110,7 +108,6 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         clientSecret: isApiKey ? undefined : clientSecret.trim() || undefined,
         priority: parseInt(priority) || 0,
         machineId: machineId.trim() || undefined,
-        profileArn: profileArn.trim() || undefined,
         proxyUrl: proxyUrl.trim() || undefined,
         proxyUsername: proxyUsername.trim() || undefined,
         proxyPassword: proxyPassword.trim() || undefined,
@@ -287,22 +284,6 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               </p>
             </div>
 
-            {/* Profile ARN */}
-            <div className="space-y-2">
-              <label htmlFor="profileArn" className="text-sm font-medium">
-                Profile ARN
-              </label>
-              <Input
-                id="profileArn"
-                placeholder="arn:aws:codewhisperer:区域:账号:profile/xxxx"
-                value={profileArn}
-                onChange={(e) => setProfileArn(e.target.value)}
-                disabled={isPending}
-              />
-              <p className="text-xs text-muted-foreground">
-                Builder-ID/IdC 若自动解析失败，可从 KAM 导出或抓包填入；新版 Kiro runtime 缺少它会 400。
-              </p>
-            </div>
 
             {/* 端点 */}
             <div className="space-y-2">
