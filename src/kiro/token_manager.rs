@@ -470,6 +470,24 @@ struct ProfileMetadata {
     email: Option<String>,
 }
 
+fn requires_profile_arn(credentials: &KiroCredentials) -> bool {
+    if credentials.is_api_key_credential() {
+        return false;
+    }
+
+    let auth_method = credentials.auth_method.as_deref().unwrap_or_else(|| {
+        if credentials.client_id.is_some() && credentials.client_secret.is_some() {
+            "idc"
+        } else {
+            "social"
+        }
+    });
+
+    auth_method.eq_ignore_ascii_case("idc")
+        || auth_method.eq_ignore_ascii_case("builder-id")
+        || auth_method.eq_ignore_ascii_case("iam")
+}
+
 fn first_profile_arn(profiles: &[Value]) -> Option<String> {
     profiles.iter().find_map(find_profile_arn_in_value)
 }
@@ -1367,6 +1385,7 @@ impl MultiTokenManager {
         credentials: KiroCredentials,
     ) -> anyhow::Result<KiroCredentials> {
         if credentials.is_api_key_credential()
+            || !requires_profile_arn(&credentials)
             || credentials
                 .profile_arn
                 .as_deref()
@@ -2433,10 +2452,7 @@ impl MultiTokenManager {
         validated_cred.proxy_password = new_cred.proxy_password;
         validated_cred.kiro_api_key = new_cred.kiro_api_key;
 
-        if validated_cred
-            .auth_method
-            .as_deref()
-            .is_some_and(|m| m.eq_ignore_ascii_case("idc"))
+        if requires_profile_arn(&validated_cred)
             && validated_cred
                 .profile_arn
                 .as_deref()
