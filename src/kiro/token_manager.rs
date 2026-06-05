@@ -2141,6 +2141,20 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
+        // profileArn 缺失时不要调用 management getUsageLimits。
+        // 新版 Kiro management 对没有 profileArn 的 Builder-ID/IdC token 会返回
+        // 400 "Invalid profileArn"，容易被误判为额度查询故障；真正的问题是凭据元数据不完整。
+        if !credentials.is_api_key_credential()
+            && credentials
+                .profile_arn
+                .as_deref()
+                .is_none_or(|v| v.trim().is_empty())
+        {
+            anyhow::bail!(
+                "凭据缺少 profileArn：请在添加 Builder-ID/IdC 凭据时填入 KAM 导出的 profileArn，或先用可解析 profileArn 的凭据刷新"
+            );
+        }
+
         let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
         let usage_limits =
             get_usage_limits(&credentials, &self.config, &token, effective_proxy.as_ref()).await?;
@@ -2280,11 +2294,32 @@ impl MultiTokenManager {
         validated_cred.auth_region = new_cred.auth_region;
         validated_cred.api_region = new_cred.api_region;
         validated_cred.machine_id = new_cred.machine_id;
+        if new_cred
+            .profile_arn
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
+        {
+            validated_cred.profile_arn = new_cred.profile_arn;
+        }
         validated_cred.email = new_cred.email;
         validated_cred.proxy_url = new_cred.proxy_url;
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;
         validated_cred.kiro_api_key = new_cred.kiro_api_key;
+
+        if validated_cred
+            .auth_method
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("idc"))
+            && validated_cred
+                .profile_arn
+                .as_deref()
+                .is_none_or(|v| v.trim().is_empty())
+        {
+            anyhow::bail!(
+                "Builder-ID/IdC 凭据缺少 profileArn；当前账号的 ListAvailableProfiles 不可访问，请从 KAM 导出里带上 profileArn 后再添加"
+            );
+        }
 
         {
             let mut entries = self.entries.lock();

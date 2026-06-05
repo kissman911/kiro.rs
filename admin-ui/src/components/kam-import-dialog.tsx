@@ -29,6 +29,7 @@ interface KamAccount {
     clientSecret?: string
     region?: string
     authMethod?: string
+    profileArn?: string
     startUrl?: string
   }
   machineId?: string
@@ -69,6 +70,7 @@ function normalizeKamAccount(item: unknown): unknown {
     const clientSecret = typeof obj.clientSecret === 'string' ? obj.clientSecret : undefined
     const region = typeof obj.region === 'string' ? obj.region : undefined
     const authMethod = typeof obj.authMethod === 'string' ? obj.authMethod : undefined
+    const profileArn = typeof obj.profileArn === 'string' ? obj.profileArn : undefined
     const startUrl = typeof obj.startUrl === 'string' ? obj.startUrl : undefined
 
     return {
@@ -83,6 +85,7 @@ function normalizeKamAccount(item: unknown): unknown {
         clientSecret,
         region,
         authMethod,
+        profileArn,
         startUrl,
       },
     }
@@ -97,6 +100,11 @@ function isValidKamAccount(item: unknown): item is KamAccount {
   if (typeof obj.credentials !== 'object' || obj.credentials === null) return false
   const cred = obj.credentials as Record<string, unknown>
   return typeof cred.refreshToken === 'string' && cred.refreshToken.trim().length > 0
+}
+
+function extractRegionFromProfileArn(profileArn?: string): string | undefined {
+  const match = profileArn?.trim().match(/^arn:aws:[^:]+:([^:]+):/)
+  return match?.[1]
 }
 
 // 解析 KAM 导出 JSON，支持单账号和多账号格式
@@ -278,6 +286,8 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             refreshToken: token,
             authMethod,
             authRegion: cred.region?.trim() || undefined,
+            apiRegion: extractRegionFromProfileArn(cred.profileArn) || undefined,
+            profileArn: cred.profileArn?.trim() || undefined,
             clientId,
             clientSecret,
             machineId: account.machineId?.trim() || undefined,

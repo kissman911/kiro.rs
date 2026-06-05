@@ -235,7 +235,7 @@ impl AdminService {
             id: None,
             access_token: None,
             refresh_token: req.refresh_token,
-            profile_arn: None,
+            profile_arn: req.profile_arn,
             expires_at: None,
             auth_method: Some(req.auth_method),
             client_id: req.client_id,
@@ -430,12 +430,17 @@ impl AdminService {
             return AdminServiceError::NotFound { id };
         }
 
-        // 2. API Key 凭据不支持刷新：客户端请求错误，映射为 400
+        // 2. 本地凭据元数据缺失：客户端请求错误，映射为 400
+        if msg.contains("缺少 profileArn") || msg.contains("profileArn") {
+            return AdminServiceError::InvalidCredential(msg);
+        }
+
+        // 3. API Key 凭据不支持刷新：客户端请求错误，映射为 400
         if msg.contains("API Key 凭据不支持刷新") {
             return AdminServiceError::InvalidCredential(msg);
         }
 
-        // 3. 上游服务错误特征：HTTP 响应错误或网络错误
+        // 4. 上游服务错误特征：HTTP 响应错误或网络错误
         let is_upstream_error =
             // HTTP 响应错误（来自 refresh_*_token 的错误消息）
             msg.contains("凭证已过期或无效") ||
@@ -472,6 +477,8 @@ impl AdminService {
             || msg.contains("kiroApiKey 重复")
             || msg.contains("缺少 kiroApiKey")
             || msg.contains("kiroApiKey 为空")
+            || msg.contains("缺少 profileArn")
+            || msg.contains("profileArn")
             || msg.contains("凭证已过期或无效")
             || msg.contains("权限不足")
             || msg.contains("已被限流");
