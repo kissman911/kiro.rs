@@ -389,6 +389,21 @@ async fn resolve_profile_metadata(
     if !regions.iter().any(|r| r == &auth_region) {
         regions.push(auth_region);
     }
+    // Builder-ID / IdC 凭据导出里经常只有 auth region（通常 us-east-1），
+    // 但实际 CodeWhisperer profile 可能落在其它 management region。
+    // 缺 profileArn 时主动多 region 探测，避免要求人工补 ARN。
+    for fallback in [
+        "eu-central-1",
+        "us-east-1",
+        "us-west-2",
+        "us-east-2",
+        "ap-southeast-1",
+        "ap-northeast-1",
+    ] {
+        if !regions.iter().any(|r| r == fallback) {
+            regions.push(fallback.to_string());
+        }
+    }
 
     for region in regions {
         let host = format!("management.{}.kiro.dev", region);
@@ -447,14 +462,36 @@ struct ProfileMetadata {
 }
 
 fn first_profile_arn(profiles: &[Value]) -> Option<String> {
-    profiles.iter().find_map(|profile| {
-        profile
-            .get("arn")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(ToString::to_string)
-    })
+    profiles.iter().find_map(find_profile_arn_in_value)
+}
+
+fn find_profile_arn_in_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for key in ["arn", "profileArn", "profileARN", "profile_arn"] {
+                if let Some(arn) = map
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .filter(|v| v.starts_with("arn:aws:codewhisperer:"))
+                {
+                    return Some(arn.to_string());
+                }
+            }
+            map.values().find_map(find_profile_arn_in_value)
+        }
+        Value::Array(items) => items.iter().find_map(find_profile_arn_in_value),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with("arn:aws:codewhisperer:") && trimmed.contains(":profile/") {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn extract_email_from_json_text(text: &str) -> Option<String> {
@@ -1289,6 +1326,8 @@ impl MultiTokenManager {
             credentials.clone()
         };
 
+        let creds = self.ensure_profile_arn_for(id, creds).await?;
+
         let token = creds
             .access_token
             .clone()
@@ -1306,6 +1345,97 @@ impl MultiTokenManager {
             credentials: creds,
             token,
         })
+    }
+
+    /// 确保 OAuth/IdC 凭据带有 profileArn。
+    ///
+    /// 新版 Kiro runtime / management 对 Builder-ID/IdC 请求强依赖 profileArn。
+    /// 如果凭据文件缺失，先用当前 accessToken 调 ListAvailableProfiles 多 region 自动解析；
+    /// 解析不到再强制 refresh，一并触发 refresh_token 内部的 profile 解析；成功后写回凭据文件。
+    async fn ensure_profile_arn_for(
+        &self,
+        id: u64,
+        credentials: KiroCredentials,
+    ) -> anyhow::Result<KiroCredentials> {
+        if credentials.is_api_key_credential()
+            || credentials
+                .profile_arn
+                .as_deref()
+                .is_some_and(|v| !v.trim().is_empty())
+        {
+            return Ok(credentials);
+        }
+
+        let _guard = self.refresh_lock.lock().await;
+
+        let current_creds = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据 #{} 不存在", id))?
+        };
+
+        if current_creds
+            .profile_arn
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
+        {
+            return Ok(current_creds);
+        }
+
+        let effective_proxy = current_creds.effective_proxy(self.proxy.as_ref());
+        let mut resolved_creds = current_creds.clone();
+
+        if resolved_creds
+            .access_token
+            .as_deref()
+            .is_some_and(|v| !v.is_empty())
+        {
+            let metadata =
+                resolve_profile_metadata(&resolved_creds, &self.config, effective_proxy.as_ref())
+                    .await?;
+            if let Some(profile_arn) = metadata.profile_arn {
+                resolved_creds.profile_arn = Some(profile_arn);
+            }
+            if resolved_creds.email.as_deref().is_none_or(str::is_empty) {
+                resolved_creds.email = metadata.email;
+            }
+        }
+
+        if resolved_creds
+            .profile_arn
+            .as_deref()
+            .is_none_or(|v| v.trim().is_empty())
+        {
+            tracing::info!("凭据 #{} 缺少 profileArn，尝试强制刷新并自动解析", id);
+            resolved_creds =
+                refresh_token(&resolved_creds, &self.config, effective_proxy.as_ref()).await?;
+        }
+
+        if resolved_creds
+            .profile_arn
+            .as_deref()
+            .is_none_or(|v| v.trim().is_empty())
+        {
+            anyhow::bail!(
+                "凭据缺少 profileArn，且自动调用 ListAvailableProfiles / refreshToken 后仍无法解析；请检查该 Builder-ID 凭据是否有可用 CodeWhisperer profile，或从 KAM 导出中手动补入 profileArn"
+            );
+        }
+
+        {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                entry.credentials = resolved_creds.clone();
+            }
+        }
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("自动解析 profileArn 后持久化失败（不影响本次请求）: {}", e);
+        }
+
+        tracing::info!("凭据 #{} profileArn 已自动解析并写回", id);
+        Ok(resolved_creds)
     }
 
     /// 将凭据列表回写到源文件
@@ -2140,20 +2270,7 @@ impl MultiTokenManager {
                 .map(|e| e.credentials.clone())
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
-
-        // profileArn 缺失时不要调用 management getUsageLimits。
-        // 新版 Kiro management 对没有 profileArn 的 Builder-ID/IdC token 会返回
-        // 400 "Invalid profileArn"，容易被误判为额度查询故障；真正的问题是凭据元数据不完整。
-        if !credentials.is_api_key_credential()
-            && credentials
-                .profile_arn
-                .as_deref()
-                .is_none_or(|v| v.trim().is_empty())
-        {
-            anyhow::bail!(
-                "凭据缺少 profileArn：请在添加 Builder-ID/IdC 凭据时填入 KAM 导出的 profileArn，或先用可解析 profileArn 的凭据刷新"
-            );
-        }
+        let credentials = self.ensure_profile_arn_for(id, credentials).await?;
 
         let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
         let usage_limits =
