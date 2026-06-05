@@ -408,7 +408,7 @@ async fn resolve_profile_metadata(
     for region in regions {
         let host = format!("management.{}.kiro.dev", region);
         let url = format!("https://{}/ListAvailableProfiles", host);
-        let response = client
+        let response = match client
             .post(&url)
             .header("content-type", "application/json")
             .header("accept", "application/json")
@@ -422,7 +422,13 @@ async fn resolve_profile_metadata(
             .json(&serde_json::json!({ "nextToken": null }))
             .send()
             .await
-            .with_context(|| format!("请求 Kiro profile 列表失败: {}", host))?;
+        {
+            Ok(response) => response,
+            Err(e) => {
+                tracing::warn!("请求 Kiro profile 列表失败 {}: {}", host, e);
+                continue;
+            }
+        };
 
         if !response.status().is_success() {
             let status = response.status();
@@ -431,10 +437,13 @@ async fn resolve_profile_metadata(
             continue;
         }
 
-        let payload: Value = response
-            .json()
-            .await
-            .context("解析 Kiro profile 列表失败")?;
+        let payload: Value = match response.json().await {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!("解析 Kiro profile 列表失败 {}: {}", host, e);
+                continue;
+            }
+        };
         let profile_arn = payload
             .get("profiles")
             .and_then(|v| v.as_array())
