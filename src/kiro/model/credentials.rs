@@ -13,6 +13,13 @@ use crate::model::rate_limit::{
     RateLimitRule, effective_rate_limit_rules, validate_rate_limit_rules,
 };
 
+/// AWS CodeWhisperer 公共默认 profileArn —— Builder-ID 登录账号共用
+pub const BUILDER_ID_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
+/// AWS CodeWhisperer 公共默认 profileArn —— Social（Github/Google）登录账号共用
+pub const SOCIAL_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
+
 /// Kiro OAuth 凭证
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -301,6 +308,42 @@ impl KiroCredentials {
                 .unwrap_or(false)
     }
 
+    /// 为缺失 profileArn 的 OAuth/IdC 凭证填入 AWS 公共默认 ARN 作为兑底。
+    ///
+    /// Builder-ID / Social 登录账号共用 AWS CodeWhisperer 的公共 profile，
+    /// 在上游 ListAvailableProfiles / refreshToken 都解析不出真实 ARN 时，
+    /// 可以先用这个默认值让请求跑通，后续 refresh 响应会用真实值覆盖。
+    ///
+    /// # Returns
+    /// - `true`  — 填入了默认 ARN
+    /// - `false` — 未修改（已有 ARN、或属 API Key 类凭证）
+    pub fn fill_default_profile_arn(&mut self) -> bool {
+        if self
+            .profile_arn
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
+            || self.is_api_key_credential()
+        {
+            return false;
+        }
+
+        let is_social = self
+            .auth_method
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case("social"))
+            .unwrap_or(false);
+
+        self.profile_arn = Some(
+            if is_social {
+                SOCIAL_PROFILE_ARN
+            } else {
+                BUILDER_ID_PROFILE_ARN
+            }
+            .to_string(),
+        );
+        true
+    }
+
     pub fn effective_rate_limits(&self, config: &Config) -> Vec<RateLimitRule> {
         effective_rate_limit_rules(
             config.default_rate_limits.as_deref(),
@@ -329,6 +372,74 @@ impl KiroCredentials {
 mod tests {
     use super::*;
     use crate::model::config::Config;
+
+    #[test]
+    fn test_fill_default_profile_arn_builder_id() {
+        // 默认 / idc / 未知 auth_method 都归为 Builder-ID
+        let mut creds = KiroCredentials {
+            access_token: Some("t".to_string()),
+            auth_method: Some("idc".to_string()),
+            ..Default::default()
+        };
+        assert!(creds.fill_default_profile_arn());
+        assert_eq!(creds.profile_arn.as_deref(), Some(BUILDER_ID_PROFILE_ARN));
+
+        let mut creds_none = KiroCredentials {
+            access_token: Some("t".to_string()),
+            ..Default::default()
+        };
+        assert!(creds_none.fill_default_profile_arn());
+        assert_eq!(
+            creds_none.profile_arn.as_deref(),
+            Some(BUILDER_ID_PROFILE_ARN)
+        );
+    }
+
+    #[test]
+    fn test_fill_default_profile_arn_social() {
+        let mut creds = KiroCredentials {
+            access_token: Some("t".to_string()),
+            auth_method: Some("social".to_string()),
+            ..Default::default()
+        };
+        assert!(creds.fill_default_profile_arn());
+        assert_eq!(creds.profile_arn.as_deref(), Some(SOCIAL_PROFILE_ARN));
+    }
+
+    #[test]
+    fn test_fill_default_profile_arn_skips_existing_and_apikey() {
+        // 已有 ARN 不覆盖
+        let mut creds = KiroCredentials {
+            profile_arn: Some("arn:aws:codewhisperer:us-east-1:111:profile/REAL".to_string()),
+            auth_method: Some("social".to_string()),
+            ..Default::default()
+        };
+        assert!(!creds.fill_default_profile_arn());
+        assert_eq!(
+            creds.profile_arn.as_deref(),
+            Some("arn:aws:codewhisperer:us-east-1:111:profile/REAL")
+        );
+
+        // 空白 ARN 视为缺失，会被填充
+        let mut creds_blank = KiroCredentials {
+            profile_arn: Some("   ".to_string()),
+            auth_method: Some("idc".to_string()),
+            ..Default::default()
+        };
+        assert!(creds_blank.fill_default_profile_arn());
+        assert_eq!(
+            creds_blank.profile_arn.as_deref(),
+            Some(BUILDER_ID_PROFILE_ARN)
+        );
+
+        // API Key 凭据不填
+        let mut creds_apikey = KiroCredentials {
+            auth_method: Some("api_key".to_string()),
+            ..Default::default()
+        };
+        assert!(!creds_apikey.fill_default_profile_arn());
+        assert!(creds_apikey.profile_arn.is_none());
+    }
 
     #[test]
     fn test_from_json() {

@@ -1447,6 +1447,23 @@ impl MultiTokenManager {
             .as_deref()
             .is_none_or(|v| v.trim().is_empty())
         {
+            // 上游 ListAvailableProfiles / refreshToken 都解析不出 ARN，
+            // 兑底填入 AWS 公共默认 profileArn（Builder-ID / Social 共用）。
+            // 后续 refresh 响应若返回真实 ARN 会自动覆盖。
+            if resolved_creds.fill_default_profile_arn() {
+                tracing::warn!(
+                    "凭据 #{} 无法从上游解析 profileArn，已兑底填入默认 ARN: {}",
+                    id,
+                    resolved_creds.profile_arn.as_deref().unwrap_or("")
+                );
+            }
+        }
+
+        if resolved_creds
+            .profile_arn
+            .as_deref()
+            .is_none_or(|v| v.trim().is_empty())
+        {
             anyhow::bail!(
                 "凭据缺少 profileArn，且自动调用 ListAvailableProfiles / refreshToken 后仍无法解析；请检查该 Builder-ID/IdC 凭据是否有可用 CodeWhisperer profile，或 token/region/proxy 是否可访问 management.*.kiro.dev"
             );
