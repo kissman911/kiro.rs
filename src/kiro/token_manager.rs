@@ -2450,6 +2450,7 @@ impl MultiTokenManager {
                 m
             }
         });
+        validated_cred.provider = new_cred.provider;
         validated_cred.client_id = new_cred.client_id;
         validated_cred.client_secret = new_cred.client_secret;
         validated_cred.region = new_cred.region;
@@ -2468,9 +2469,15 @@ impl MultiTokenManager {
                 .as_deref()
                 .is_none_or(|v| v.trim().is_empty())
         {
-            anyhow::bail!(
-                "Builder-ID/IdC 凭据缺少 profileArn，且自动调用 ListAvailableProfiles / refreshToken 后仍无法解析；请检查该账号是否有可用 CodeWhisperer profile，或 token/region/proxy 是否可访问 management.*.kiro.dev"
-            );
+            // 上游 refresh / ListAvailableProfiles 未解析出 profileArn，兑底填入
+            // AWS 公共默认 ARN（Builder-ID / Social 共用），让凭据能添加成功。
+            // 后续首次调用时 refresh 响应若返回真实 ARN 会自动覆盖。
+            if validated_cred.fill_default_profile_arn() {
+                tracing::warn!(
+                    "新增凭据无法从上游解析 profileArn，已兑底填入默认 ARN: {}",
+                    validated_cred.profile_arn.as_deref().unwrap_or("")
+                );
+            }
         }
 
         {
