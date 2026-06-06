@@ -238,6 +238,7 @@ impl AdminService {
             profile_arn: None,
             expires_at: None,
             auth_method: Some(req.auth_method),
+            provider: None,
             client_id: req.client_id,
             client_secret: req.client_secret,
             priority: req.priority,

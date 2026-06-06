@@ -48,6 +48,11 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
 
+    /// 身份提供商（KAM 导出字段：BuilderId / Enterprise / Github / Google / IAM_SSO）
+    /// 用于在缺失 profileArn 时辅助判断 social/builder-id 默认 ARN
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
     /// OIDC Client ID (IdC 认证需要)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
@@ -331,7 +336,16 @@ impl KiroCredentials {
             .auth_method
             .as_deref()
             .map(|m| m.eq_ignore_ascii_case("social"))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || self
+                .provider
+                .as_deref()
+                .map(|p| {
+                    p.eq_ignore_ascii_case("github")
+                        || p.eq_ignore_ascii_case("google")
+                        || p.eq_ignore_ascii_case("social")
+                })
+                .unwrap_or(false);
 
         self.profile_arn = Some(
             if is_social {
@@ -407,6 +421,36 @@ mod tests {
     }
 
     #[test]
+    fn test_fill_default_profile_arn_social_by_provider() {
+        // provider=github/google 也归为 social，即使 auth_method 未标记
+        for p in ["github", "Google", "social"] {
+            let mut creds = KiroCredentials {
+                access_token: Some("t".to_string()),
+                provider: Some(p.to_string()),
+                ..Default::default()
+            };
+            assert!(creds.fill_default_profile_arn());
+            assert_eq!(
+                creds.profile_arn.as_deref(),
+                Some(SOCIAL_PROFILE_ARN),
+                "provider={p} 应归为 social"
+            );
+        }
+
+        // provider=BuilderId 走 builder-id arn
+        let mut creds_bid = KiroCredentials {
+            access_token: Some("t".to_string()),
+            provider: Some("BuilderId".to_string()),
+            ..Default::default()
+        };
+        assert!(creds_bid.fill_default_profile_arn());
+        assert_eq!(
+            creds_bid.profile_arn.as_deref(),
+            Some(BUILDER_ID_PROFILE_ARN)
+        );
+    }
+
+    #[test]
     fn test_fill_default_profile_arn_skips_existing_and_apikey() {
         // 已有 ARN 不覆盖
         let mut creds = KiroCredentials {
@@ -479,6 +523,7 @@ mod tests {
             profile_arn: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
+            provider: None,
             client_id: None,
             client_secret: None,
             priority: 0,
@@ -599,6 +644,7 @@ mod tests {
             profile_arn: None,
             expires_at: None,
             auth_method: None,
+            provider: None,
             client_id: None,
             client_secret: None,
             priority: 0,
@@ -632,6 +678,7 @@ mod tests {
             profile_arn: None,
             expires_at: None,
             auth_method: None,
+            provider: None,
             client_id: None,
             client_secret: None,
             priority: 0,
@@ -748,6 +795,7 @@ mod tests {
             profile_arn: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
+            provider: None,
             client_id: None,
             client_secret: None,
             priority: 3,
