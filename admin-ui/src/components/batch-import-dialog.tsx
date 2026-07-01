@@ -22,6 +22,10 @@ interface CredentialInput {
   refreshToken?: string
   clientId?: string
   clientSecret?: string
+  tokenEndpoint?: string
+  issuerUrl?: string
+  scopes?: string
+  provider?: string
   region?: string
   authRegion?: string
   apiRegion?: string
@@ -268,11 +272,18 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
           const token = cred.refreshToken!.trim()
           const clientId = cred.clientId?.trim() || undefined
           const clientSecret = cred.clientSecret?.trim() || undefined
-          const authMethod = clientId && clientSecret ? 'idc' : 'social'
+          const tokenEndpoint = cred.tokenEndpoint?.trim() || undefined
+          const explicitAuthMethod = cred.authMethod?.trim().toLowerCase()
+          const authMethod = explicitAuthMethod === 'external_idp' || tokenEndpoint
+            ? 'external_idp'
+            : clientId && clientSecret ? 'idc' : 'social'
 
-          // idc 模式下必须同时提供 clientId 和 clientSecret
-          if (authMethod === 'social' && (clientId || clientSecret)) {
-            throw new Error('idc 模式需要同时提供 clientId 和 clientSecret')
+          // idc 模式下必须同时提供 clientId 和 clientSecret；external_idp 需要 clientId + tokenEndpoint，无 clientSecret
+          if (authMethod === 'social' && (clientId || clientSecret || tokenEndpoint)) {
+            throw new Error('social 模式不应包含 clientId/clientSecret/tokenEndpoint')
+          }
+          if (authMethod === 'external_idp' && (!clientId || !tokenEndpoint)) {
+            throw new Error('external_idp 模式需要 clientId 和 tokenEndpoint')
           }
 
           const addedCred = await addCredential({
@@ -281,7 +292,11 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             authRegion: cred.authRegion?.trim() || cred.region?.trim() || undefined,
             apiRegion: cred.apiRegion?.trim() || undefined,
             clientId,
-            clientSecret,
+            clientSecret: authMethod === 'external_idp' ? undefined : clientSecret,
+            tokenEndpoint,
+            issuerUrl: cred.issuerUrl?.trim() || undefined,
+            scopes: cred.scopes?.trim() || undefined,
+            provider: cred.provider?.trim() || undefined,
             priority: cred.priority || 0,
             machineId: cred.machineId?.trim() || undefined,
             endpoint: cred.endpoint?.trim() || undefined,

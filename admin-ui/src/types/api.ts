@@ -100,9 +100,13 @@ export interface SetAllowOverageRequest {
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
-  authMethod?: 'social' | 'idc' | 'api_key'
+  authMethod?: 'social' | 'idc' | 'api_key' | 'external_idp'
   clientId?: string
   clientSecret?: string
+  tokenEndpoint?: string
+  issuerUrl?: string
+  scopes?: string
+  provider?: string
   priority?: number
   authRegion?: string
   apiRegion?: string

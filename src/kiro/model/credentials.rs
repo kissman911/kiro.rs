@@ -44,7 +44,7 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
 
-    /// 认证方式 (social / idc)
+    /// 认证方式 (social / idc / external_idp)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
 
@@ -60,6 +60,18 @@ pub struct KiroCredentials {
     /// OIDC Client Secret (IdC 认证需要)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
+
+    /// External IdP token endpoint（M365 / Entra ID 企业 SSO 刷新需要）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_endpoint: Option<String>,
+
+    /// External IdP issuer URL（可选，便于导入/导出保留来源）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer_url: Option<String>,
+
+    /// External IdP OAuth scopes（M365 / Entra ID refresh_token grant 可选但建议保留）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<String>,
 
     /// 凭据优先级（数字越小优先级越高，默认为 0）
     #[serde(default)]
@@ -313,6 +325,19 @@ impl KiroCredentials {
                 .unwrap_or(false)
     }
 
+    /// 检查是否为 Enterprise SSO / external IdP 凭据（如 Microsoft 365 / Entra ID）
+    pub fn is_external_idp_credential(&self) -> bool {
+        self.auth_method
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case("external_idp"))
+            .unwrap_or(false)
+            || self
+                .provider
+                .as_deref()
+                .map(|p| p.eq_ignore_ascii_case("externalidp") || p.eq_ignore_ascii_case("azuread"))
+                .unwrap_or(false)
+    }
+
     /// 为缺失 profileArn 的 OAuth/IdC 凭证填入 AWS 公共默认 ARN 作为兑底。
     ///
     /// Builder-ID / Social 登录账号共用 AWS CodeWhisperer 的公共 profile，
@@ -329,6 +354,10 @@ impl KiroCredentials {
             .is_some_and(|v| !v.trim().is_empty())
             || self.is_api_key_credential()
         {
+            return false;
+        }
+
+        if self.is_external_idp_credential() {
             return false;
         }
 
@@ -407,6 +436,40 @@ mod tests {
             creds_none.profile_arn.as_deref(),
             Some(BUILDER_ID_PROFILE_ARN)
         );
+    }
+
+    #[test]
+    fn test_external_idp_roundtrip_and_default_profile_skip() {
+        let json = r#"{
+            "authMethod":"external_idp",
+            "provider":"ExternalIdp",
+            "refreshToken":"refresh-token-long-enough-for-shape-only",
+            "clientId":"e491fadf-0239-44f9-be3b-d3e1ff193c79",
+            "tokenEndpoint":"https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+            "issuerUrl":"https://login.microsoftonline.com/tenant/v2.0",
+            "scopes":"api://client/codewhisperer:conversations offline_access"
+        }"#;
+        let mut creds = KiroCredentials::from_json(json).expect("external_idp json parses");
+
+        assert!(creds.is_external_idp_credential());
+        assert_eq!(creds.auth_method.as_deref(), Some("external_idp"));
+        assert_eq!(creds.provider.as_deref(), Some("ExternalIdp"));
+        assert_eq!(
+            creds.token_endpoint.as_deref(),
+            Some("https://login.microsoftonline.com/tenant/oauth2/v2.0/token")
+        );
+        assert_eq!(creds.issuer_url.as_deref(), Some("https://login.microsoftonline.com/tenant/v2.0"));
+        assert_eq!(
+            creds.scopes.as_deref(),
+            Some("api://client/codewhisperer:conversations offline_access")
+        );
+
+        assert!(!creds.fill_default_profile_arn());
+        assert!(creds.profile_arn.is_none());
+
+        let serialized = creds.to_pretty_json().expect("serialize external_idp");
+        assert!(serialized.contains("tokenEndpoint"));
+        assert!(serialized.contains("issuerUrl"));
     }
 
     #[test]
@@ -526,6 +589,9 @@ mod tests {
             provider: None,
             client_id: None,
             client_secret: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             priority: 0,
             region: None,
             auth_region: None,
@@ -647,6 +713,9 @@ mod tests {
             provider: None,
             client_id: None,
             client_secret: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             priority: 0,
             region: Some("eu-west-1".to_string()),
             auth_region: None,
@@ -681,6 +750,9 @@ mod tests {
             provider: None,
             client_id: None,
             client_secret: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             priority: 0,
             region: None,
             auth_region: None,
@@ -798,6 +870,9 @@ mod tests {
             provider: None,
             client_id: None,
             client_secret: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             priority: 3,
             region: Some("us-west-2".to_string()),
             auth_region: None,

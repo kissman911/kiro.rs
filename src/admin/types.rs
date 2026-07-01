@@ -146,6 +146,18 @@ pub struct AddCredentialRequest {
     /// OIDC Client Secret（IdC 认证需要）
     pub client_secret: Option<String>,
 
+    /// External IdP token endpoint（M365 / Entra ID 企业 SSO 需要）
+    pub token_endpoint: Option<String>,
+
+    /// External IdP issuer URL（可选）
+    pub issuer_url: Option<String>,
+
+    /// External IdP OAuth scopes（可选）
+    pub scopes: Option<String>,
+
+    /// 身份提供商（可选，如 ExternalIdp / AzureAD）
+    pub provider: Option<String>,
+
     /// 优先级（可选，默认 0）
     #[serde(default)]
     pub priority: u32,

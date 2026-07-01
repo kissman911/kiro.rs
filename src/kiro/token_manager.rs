@@ -23,6 +23,7 @@ use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::{
     IdcRefreshRequest, IdcRefreshResponse, RefreshRequest, RefreshResponse,
 };
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
 use crate::model::rate_limit::{RateLimitRule, ResolvedRateLimitRule, resolve_rate_limit_rules};
@@ -130,7 +131,9 @@ pub(crate) async fn refresh_token(
         }
     });
 
-    if auth_method.eq_ignore_ascii_case("idc")
+    if auth_method.eq_ignore_ascii_case("external_idp") {
+        refresh_external_idp_token(credentials, config, proxy).await
+    } else if auth_method.eq_ignore_ascii_case("idc")
         || auth_method.eq_ignore_ascii_case("builder-id")
         || auth_method.eq_ignore_ascii_case("iam")
     {
@@ -138,6 +141,87 @@ pub(crate) async fn refresh_token(
     } else {
         refresh_social_token(credentials, config, proxy).await
     }
+}
+
+/// 刷新 External IdP Token（Microsoft 365 / Entra ID 企业 SSO）
+async fn refresh_external_idp_token(
+    credentials: &KiroCredentials,
+    config: &Config,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<KiroCredentials> {
+    tracing::info!("正在刷新 External IdP Token...");
+
+    let refresh_token = credentials.refresh_token.as_ref().unwrap();
+    let client_id = credentials
+        .client_id
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("External IdP 刷新需要 clientId"))?;
+    let token_endpoint = credentials
+        .token_endpoint
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("External IdP 刷新需要 tokenEndpoint"))?;
+
+    let client = build_client(proxy, 60, config.tls_backend)?;
+    let mut form = vec![
+        ("client_id", client_id.as_str()),
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token.as_str()),
+    ];
+    if let Some(scopes) = credentials.scopes.as_deref().filter(|s| !s.trim().is_empty()) {
+        form.push(("scope", scopes));
+    }
+
+    let response = client
+        .post(token_endpoint)
+        .header(ACCEPT, "application/json")
+        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .form(&form)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let body_text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        if status.as_u16() == 400 && body_text.contains("invalid_grant") {
+            return Err(RefreshTokenInvalidError {
+                message: format!("External IdP refreshToken 已失效 (invalid_grant): {}", body_text),
+            }
+            .into());
+        }
+        bail!("External IdP Token 刷新失败: {} {}", status, body_text);
+    }
+
+    let data: serde_json::Value =
+        serde_json::from_str(&body_text).context("解析 External IdP refreshToken 响应失败")?;
+    let access_token = data
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("External IdP 响应缺少 access_token"))?;
+
+    let mut new_credentials = credentials.clone();
+    new_credentials.access_token = Some(access_token.to_string());
+    if let Some(new_refresh_token) = data.get("refresh_token").and_then(|v| v.as_str()) {
+        if !new_refresh_token.is_empty() {
+            new_credentials.refresh_token = Some(new_refresh_token.to_string());
+        }
+    }
+    if let Some(expires_in) = data.get("expires_in").and_then(|v| v.as_i64()) {
+        let expires_at = Utc::now() + Duration::seconds(expires_in);
+        new_credentials.expires_at = Some(expires_at.to_rfc3339());
+    }
+    if new_credentials.email.as_deref().is_none_or(str::is_empty) {
+        new_credentials.email = extract_email_from_json_text(&body_text);
+    }
+
+    let profile_metadata = resolve_profile_metadata(&new_credentials, config, proxy).await?;
+    if new_credentials.profile_arn.is_none() {
+        new_credentials.profile_arn = profile_metadata.profile_arn;
+    }
+    if new_credentials.email.as_deref().is_none_or(str::is_empty) {
+        new_credentials.email = profile_metadata.email;
+    }
+
+    Ok(new_credentials)
 }
 
 /// 刷新 Social Token
@@ -408,7 +492,7 @@ async fn resolve_profile_metadata(
     for region in regions {
         let host = format!("management.{}.kiro.dev", region);
         let url = format!("https://{}/ListAvailableProfiles", host);
-        let response = match client
+        let mut request = client
             .post(&url)
             .header("content-type", "application/json")
             .header("accept", "application/json")
@@ -418,7 +502,13 @@ async fn resolve_profile_metadata(
             .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
             .header("amz-sdk-request", "attempt=1; max=1")
             .header("Authorization", format!("Bearer {}", token))
-            .header("Connection", "close")
+            .header("Connection", "close");
+
+        if credentials.is_external_idp_credential() {
+            request = request.header("TokenType", "EXTERNAL_IDP");
+        }
+
+        let response = match request
             .json(&serde_json::json!({ "nextToken": null }))
             .send()
             .await
@@ -486,6 +576,7 @@ fn requires_profile_arn(credentials: &KiroCredentials) -> bool {
     auth_method.eq_ignore_ascii_case("idc")
         || auth_method.eq_ignore_ascii_case("builder-id")
         || auth_method.eq_ignore_ascii_case("iam")
+        || auth_method.eq_ignore_ascii_case("external_idp")
 }
 
 fn first_profile_arn(profiles: &[Value]) -> Option<String> {
@@ -634,6 +725,8 @@ pub(crate) async fn get_usage_limits(
 
     if credentials.is_api_key_credential() {
         request = request.header("tokentype", "API_KEY");
+    } else if credentials.is_external_idp_credential() {
+        request = request.header("TokenType", "EXTERNAL_IDP");
     }
 
     let response = request.send().await?;
@@ -2453,6 +2546,9 @@ impl MultiTokenManager {
         validated_cred.provider = new_cred.provider;
         validated_cred.client_id = new_cred.client_id;
         validated_cred.client_secret = new_cred.client_secret;
+        validated_cred.token_endpoint = new_cred.token_endpoint;
+        validated_cred.issuer_url = new_cred.issuer_url;
+        validated_cred.scopes = new_cred.scopes;
         validated_cred.region = new_cred.region;
         validated_cred.auth_region = new_cred.auth_region;
         validated_cred.api_region = new_cred.api_region;

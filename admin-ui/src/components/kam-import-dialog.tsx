@@ -27,6 +27,10 @@ interface KamAccount {
     refreshToken: string
     clientId?: string
     clientSecret?: string
+    tokenEndpoint?: string
+    issuerUrl?: string
+    scopes?: string
+    provider?: string
     region?: string
     authMethod?: string
     startUrl?: string
@@ -67,6 +71,10 @@ function normalizeKamAccount(item: unknown): unknown {
     const machineId = typeof obj.machineId === 'string' ? obj.machineId : undefined
     const clientId = typeof obj.clientId === 'string' ? obj.clientId : undefined
     const clientSecret = typeof obj.clientSecret === 'string' ? obj.clientSecret : undefined
+    const tokenEndpoint = typeof obj.tokenEndpoint === 'string' ? obj.tokenEndpoint : undefined
+    const issuerUrl = typeof obj.issuerUrl === 'string' ? obj.issuerUrl : undefined
+    const scopes = typeof obj.scopes === 'string' ? obj.scopes : undefined
+    const provider = typeof obj.provider === 'string' ? obj.provider : undefined
     const region = typeof obj.region === 'string' ? obj.region : undefined
     const authMethod = typeof obj.authMethod === 'string' ? obj.authMethod : undefined
     const startUrl = typeof obj.startUrl === 'string' ? obj.startUrl : undefined
@@ -81,6 +89,10 @@ function normalizeKamAccount(item: unknown): unknown {
         refreshToken: obj.refreshToken,
         clientId,
         clientSecret,
+        tokenEndpoint,
+        issuerUrl,
+        scopes,
+        provider,
         region,
         authMethod,
         startUrl,
@@ -268,11 +280,22 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
         try {
           const clientId = cred.clientId?.trim() || undefined
           const clientSecret = cred.clientSecret?.trim() || undefined
-          const authMethod = clientId && clientSecret ? 'idc' : 'social'
+          const tokenEndpoint = cred.tokenEndpoint?.trim() || undefined
+          const provider = cred.provider?.trim() || undefined
+          const explicitAuthMethod = cred.authMethod?.trim().toLowerCase()
+          const providerIsExternalIdp = provider
+            ? ['externalidp', 'azuread', 'enterprise'].includes(provider.toLowerCase())
+            : false
+          const authMethod = explicitAuthMethod === 'external_idp' || tokenEndpoint || providerIsExternalIdp
+            ? 'external_idp'
+            : clientId && clientSecret ? 'idc' : 'social'
 
-          // idc 模式下必须同时提供 clientId 和 clientSecret
-          if (authMethod === 'social' && (clientId || clientSecret)) {
-            throw new Error('idc 模式需要同时提供 clientId 和 clientSecret')
+          // idc 模式下必须同时提供 clientId 和 clientSecret；external_idp 需要 clientId + tokenEndpoint，无 clientSecret
+          if (authMethod === 'social' && (clientId || clientSecret || tokenEndpoint)) {
+            throw new Error('social 模式不应包含 clientId/clientSecret/tokenEndpoint')
+          }
+          if (authMethod === 'external_idp' && (!clientId || !tokenEndpoint)) {
+            throw new Error('external_idp 模式需要 clientId 和 tokenEndpoint')
           }
 
           const addedCred = await addCredential({
@@ -280,7 +303,11 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             authMethod,
             authRegion: cred.region?.trim() || undefined,
             clientId,
-            clientSecret,
+            clientSecret: authMethod === 'external_idp' ? undefined : clientSecret,
+            tokenEndpoint,
+            issuerUrl: cred.issuerUrl?.trim() || undefined,
+            scopes: cred.scopes?.trim() || undefined,
+            provider,
             machineId: account.machineId?.trim() || undefined,
           })
 
@@ -417,7 +444,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
           <div className="space-y-2">
             <label className="text-sm font-medium">KAM 导出 JSON</label>
             <textarea
-              placeholder={'粘贴 Kiro Account Manager 导出的 JSON\n\n支持 KAM 1.8.3+ 新版平铺格式：\n[\n  {\n    "email": "...",\n    "refreshToken": "...",\n    "clientId": "...",\n    "clientSecret": "...",\n    "region": "us-east-1"\n  }\n]\n\n（可选的 authMethod 字段会被忽略，系统会根据 clientId/clientSecret 自动判断）\n\n也支持旧版嵌套格式：\n{\n  "version": "1.5.0",\n  "accounts": [\n    {\n      "email": "...",\n      "credentials": {\n        "refreshToken": "...",\n        "clientId": "...",\n        "clientSecret": "...",\n        "region": "us-east-1"\n      }\n    }\n  ]\n}'}
+              placeholder={'粘贴 Kiro Account Manager 导出的 JSON\n\n支持 KAM 1.8.3+ 新版平铺格式：\n[\n  {\n    "email": "...",\n    "refreshToken": "...",\n    "clientId": "...",\n    "clientSecret": "...",\n    "region": "us-east-1"\n  }\n]\n\n支持 authMethod=external_idp + tokenEndpoint/clientId/scopes 的 M365/Entra ID 企业 SSO 账号\n\n也支持旧版嵌套格式：\n{\n  "version": "1.5.0",\n  "accounts": [\n    {\n      "email": "...",\n      "credentials": {\n        "refreshToken": "...",\n        "clientId": "...",\n        "clientSecret": "...",\n        "region": "us-east-1"\n      }\n    }\n  ]\n}'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}

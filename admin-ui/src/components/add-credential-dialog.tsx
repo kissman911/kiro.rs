@@ -17,7 +17,7 @@ interface AddCredentialDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-type AuthMethod = 'social' | 'idc' | 'api_key'
+type AuthMethod = 'social' | 'idc' | 'api_key' | 'external_idp'
 
 export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogProps) {
   const [refreshToken, setRefreshToken] = useState('')
@@ -27,6 +27,9 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [apiRegion, setApiRegion] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
+  const [tokenEndpoint, setTokenEndpoint] = useState('')
+  const [issuerUrl, setIssuerUrl] = useState('')
+  const [scopes, setScopes] = useState('')
   const [priority, setPriority] = useState('0')
   const [machineId, setMachineId] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
@@ -47,6 +50,9 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setApiRegion('')
     setClientId('')
     setClientSecret('')
+    setTokenEndpoint('')
+    setIssuerUrl('')
+    setScopes('')
     setPriority('0')
     setMachineId('')
     setProxyUrl('')
@@ -79,6 +85,10 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         toast.error('IdC/Builder-ID/IAM 认证需要填写 Client ID 和 Client Secret')
         return
       }
+      if (authMethod === 'external_idp' && (!clientId.trim() || !tokenEndpoint.trim())) {
+        toast.error('企业 SSO / M365 认证需要填写 Client ID 和 Token Endpoint')
+        return
+      }
     }
 
     let rateLimits
@@ -105,7 +115,11 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         authRegion: authRegion.trim() || undefined,
         apiRegion: apiRegion.trim() || undefined,
         clientId: isApiKey ? undefined : clientId.trim() || undefined,
-        clientSecret: isApiKey ? undefined : clientSecret.trim() || undefined,
+        clientSecret: isApiKey || authMethod === 'external_idp' ? undefined : clientSecret.trim() || undefined,
+        tokenEndpoint: authMethod === 'external_idp' ? tokenEndpoint.trim() || undefined : undefined,
+        issuerUrl: authMethod === 'external_idp' ? issuerUrl.trim() || undefined : undefined,
+        scopes: authMethod === 'external_idp' ? scopes.trim() || undefined : undefined,
+        provider: authMethod === 'external_idp' ? 'ExternalIdp' : undefined,
         priority: parseInt(priority) || 0,
         machineId: machineId.trim() || undefined,
         proxyUrl: proxyUrl.trim() || undefined,
@@ -151,6 +165,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               >
                 <option value="social">Social</option>
                 <option value="idc">IdC/Builder-ID/IAM</option>
+                <option value="external_idp">企业 SSO / Microsoft 365</option>
                 <option value="api_key">API Key</option>
               </select>
             </div>
@@ -242,6 +257,62 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                     placeholder="请输入 Client Secret"
                     value={clientSecret}
                     onChange={(e) => setClientSecret(e.target.value)}
+                    disabled={isPending}
+                  />
+                </div>
+              </>
+            )}
+
+
+
+            {/* 企业 SSO / Microsoft 365 额外字段 */}
+            {authMethod === 'external_idp' && (
+              <>
+                <div className="space-y-2">
+                  <label htmlFor="clientId" className="text-sm font-medium">
+                    Client ID <span className="text-red-500">*</span>
+                  </label>
+                  <Input
+                    id="clientId"
+                    placeholder="请输入 Microsoft 365 / Entra ID Client ID"
+                    value={clientId}
+                    onChange={(e) => setClientId(e.target.value)}
+                    disabled={isPending}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="tokenEndpoint" className="text-sm font-medium">
+                    Token Endpoint <span className="text-red-500">*</span>
+                  </label>
+                  <Input
+                    id="tokenEndpoint"
+                    placeholder="https://login.microsoftonline.com/.../oauth2/v2.0/token"
+                    value={tokenEndpoint}
+                    onChange={(e) => setTokenEndpoint(e.target.value)}
+                    disabled={isPending}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="scopes" className="text-sm font-medium">
+                    Scopes
+                  </label>
+                  <Input
+                    id="scopes"
+                    placeholder="codewhisperer scopes + offline_access"
+                    value={scopes}
+                    onChange={(e) => setScopes(e.target.value)}
+                    disabled={isPending}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="issuerUrl" className="text-sm font-medium">
+                    Issuer URL（可选）
+                  </label>
+                  <Input
+                    id="issuerUrl"
+                    placeholder="https://login.microsoftonline.com/<tenant>/v2.0"
+                    value={issuerUrl}
+                    onChange={(e) => setIssuerUrl(e.target.value)}
                     disabled={isPending}
                   />
                 </div>
