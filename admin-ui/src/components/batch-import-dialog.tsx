@@ -26,6 +26,9 @@ interface CredentialInput {
   issuerUrl?: string
   scopes?: string
   provider?: string
+  proxyUrl?: string
+  proxyUsername?: string
+  proxyPassword?: string
   region?: string
   authRegion?: string
   apiRegion?: string
@@ -297,6 +300,9 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             issuerUrl: cred.issuerUrl?.trim() || undefined,
             scopes: cred.scopes?.trim() || undefined,
             provider: cred.provider?.trim() || undefined,
+            proxyUrl: cred.proxyUrl?.trim() || undefined,
+            proxyUsername: cred.proxyUsername?.trim() || undefined,
+            proxyPassword: cred.proxyPassword?.trim() || undefined,
             priority: cred.priority || 0,
             machineId: cred.machineId?.trim() || undefined,
             endpoint: cred.endpoint?.trim() || undefined,

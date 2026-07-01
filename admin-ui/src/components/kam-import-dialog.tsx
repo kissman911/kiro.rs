@@ -31,6 +31,9 @@ interface KamAccount {
     issuerUrl?: string
     scopes?: string
     provider?: string
+    proxyUrl?: string
+    proxyUsername?: string
+    proxyPassword?: string
     region?: string
     authMethod?: string
     startUrl?: string
@@ -75,6 +78,9 @@ function normalizeKamAccount(item: unknown): unknown {
     const issuerUrl = typeof obj.issuerUrl === 'string' ? obj.issuerUrl : undefined
     const scopes = typeof obj.scopes === 'string' ? obj.scopes : undefined
     const provider = typeof obj.provider === 'string' ? obj.provider : undefined
+    const proxyUrl = typeof obj.proxyUrl === 'string' ? obj.proxyUrl : undefined
+    const proxyUsername = typeof obj.proxyUsername === 'string' ? obj.proxyUsername : undefined
+    const proxyPassword = typeof obj.proxyPassword === 'string' ? obj.proxyPassword : undefined
     const region = typeof obj.region === 'string' ? obj.region : undefined
     const authMethod = typeof obj.authMethod === 'string' ? obj.authMethod : undefined
     const startUrl = typeof obj.startUrl === 'string' ? obj.startUrl : undefined
@@ -93,6 +99,9 @@ function normalizeKamAccount(item: unknown): unknown {
         issuerUrl,
         scopes,
         provider,
+        proxyUrl,
+        proxyUsername,
+        proxyPassword,
         region,
         authMethod,
         startUrl,
@@ -308,6 +317,9 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             issuerUrl: cred.issuerUrl?.trim() || undefined,
             scopes: cred.scopes?.trim() || undefined,
             provider,
+            proxyUrl: cred.proxyUrl?.trim() || undefined,
+            proxyUsername: cred.proxyUsername?.trim() || undefined,
+            proxyPassword: cred.proxyPassword?.trim() || undefined,
             machineId: account.machineId?.trim() || undefined,
           })
 
