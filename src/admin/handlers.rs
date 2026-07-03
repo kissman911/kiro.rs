@@ -128,6 +128,18 @@ pub async fn reset_failure_count(
     }
 }
 
+/// POST /api/admin/credentials/:id/clear-cooldown
+/// 手动清除凭据运行时风控冷却
+pub async fn clear_credential_cooldown(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.clear_cooldown(id) {
+        Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 已退出风控冷却", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// GET /api/admin/credentials/:id/balance
 /// 获取指定凭据的余额
 pub async fn get_credential_balance(

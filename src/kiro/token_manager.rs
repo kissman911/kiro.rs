@@ -23,10 +23,10 @@ use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::{
     IdcRefreshRequest, IdcRefreshResponse, RefreshRequest, RefreshResponse,
 };
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
 use crate::model::rate_limit::{RateLimitRule, ResolvedRateLimitRule, resolve_rate_limit_rules};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 
 /// 检查 Token 是否在指定时间内过期
 pub(crate) fn is_token_expiring_within(
@@ -167,7 +167,11 @@ async fn refresh_external_idp_token(
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token.as_str()),
     ];
-    if let Some(scopes) = credentials.scopes.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(scopes) = credentials
+        .scopes
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         form.push(("scope", scopes));
     }
 
@@ -184,7 +188,10 @@ async fn refresh_external_idp_token(
     if !status.is_success() {
         if status.as_u16() == 400 && body_text.contains("invalid_grant") {
             return Err(RefreshTokenInvalidError {
-                message: format!("External IdP refreshToken 已失效 (invalid_grant): {}", body_text),
+                message: format!(
+                    "External IdP refreshToken 已失效 (invalid_grant): {}",
+                    body_text
+                ),
             }
             .into());
         }
@@ -2237,6 +2244,23 @@ impl MultiTokenManager {
         Ok(())
     }
 
+    /// 清除凭据的运行时风控冷却状态（Admin API）
+    ///
+    /// 冷却状态只存在内存中，不持久化到 credentials.json；手动清除后立即重新参与调度。
+    pub fn clear_cooldown(&self, id: u64) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.cooldown_until = None;
+            entry.cooldown_until_wall = None;
+        }
+        self.select_highest_priority();
+        Ok(())
+    }
+
     /// 设置凭据级限流规则（Admin API）
     fn normalize_optional_rate_limits(
         rate_limits: Option<Vec<RateLimitRule>>,
@@ -2306,6 +2330,8 @@ impl MultiTokenManager {
             entry.refresh_failure_count = 0;
             entry.disabled = false;
             entry.disabled_reason = None;
+            entry.cooldown_until = None;
+            entry.cooldown_until_wall = None;
         }
         // 持久化更改
         self.persist_credentials()?;
@@ -3508,6 +3534,27 @@ mod suspicious_cooldown_tests {
         assert!(cooled.cooldown_until.is_some());
         let active = entries.iter().find(|e| e.id == 2).unwrap();
         assert!(!active.disabled);
+    }
+
+    #[test]
+    fn clear_cooldown_restores_available_count() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.id = Some(1);
+        cred.refresh_token = Some("token1".to_string());
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false)
+            .expect("manager should initialize");
+
+        assert!(!manager.report_suspicious_rate_limited(1, StdDuration::from_secs(60)));
+        assert_eq!(manager.available_count(), 0);
+
+        manager.clear_cooldown(1).expect("cooldown should clear");
+        assert_eq!(manager.available_count(), 1);
+        let entries = manager.entries.lock();
+        let cleared = entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(cleared.cooldown_until.is_none());
+        assert!(cleared.cooldown_until_wall.is_none());
     }
 
     #[test]

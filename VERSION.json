@@ -1,7 +1,7 @@
 {
-  "version": "2026.5.18-kiss.2",
+  "version": "2026.7.3-kiss.1",
   "channel": "kissapi",
-  "codename": "cooldown-api-pass-through",
-  "date": "2026-05-18",
-  "summary": "Pass credential cooldown status through Admin service responses so the UI can display cooling credentials."
+  "codename": "manual-cooldown-clear",
+  "date": "2026-07-03",
+  "summary": "Add Admin API and UI action to manually clear runtime credential cooldown."
 }

@@ -458,7 +458,10 @@ mod tests {
             creds.token_endpoint.as_deref(),
             Some("https://login.microsoftonline.com/tenant/oauth2/v2.0/token")
         );
-        assert_eq!(creds.issuer_url.as_deref(), Some("https://login.microsoftonline.com/tenant/v2.0"));
+        assert_eq!(
+            creds.issuer_url.as_deref(),
+            Some("https://login.microsoftonline.com/tenant/v2.0")
+        );
         assert_eq!(
             creds.scopes.as_deref(),
             Some("api://client/codewhisperer:conversations offline_access")

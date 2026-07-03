@@ -93,6 +93,14 @@ export async function resetCredentialFailure(
   return data
 }
 
+// 手动退出风控冷却
+export async function clearCredentialCooldown(
+  id: number
+): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>(`/credentials/${id}/clear-cooldown`)
+  return data
+}
+
 // 强制刷新 Token
 export async function forceRefreshToken(
   id: number

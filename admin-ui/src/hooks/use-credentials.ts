@@ -6,6 +6,7 @@ import {
   setCredentialAllowOverage,
   setCredentialRateLimits,
   resetCredentialFailure,
+  clearCredentialCooldown,
   forceRefreshToken,
   getCredentialBalance,
   addCredential,
@@ -91,6 +92,17 @@ export function useResetFailure() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => resetCredentialFailure(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 手动退出风控冷却
+export function useClearCooldown() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => clearCredentialCooldown(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
     },

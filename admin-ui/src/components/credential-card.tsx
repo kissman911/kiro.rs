@@ -21,6 +21,7 @@ import {
   useSetPriority,
   useSetAllowOverage,
   useResetFailure,
+  useClearCooldown,
   useDeleteCredential,
   useForceRefreshToken,
   useResetSuccessCount,
@@ -83,6 +84,7 @@ export function CredentialCard({
   const setPriority = useSetPriority()
   const setAllowOverage = useSetAllowOverage()
   const resetFailure = useResetFailure()
+  const clearCooldown = useClearCooldown()
   const deleteCredential = useDeleteCredential()
   const forceRefresh = useForceRefreshToken()
   const resetSuccess = useResetSuccessCount()
@@ -160,6 +162,17 @@ export function CredentialCard({
       },
       onError: (err) => {
         toast.error('重置失败: ' + (err as Error).message)
+      },
+    })
+  }
+
+  const handleClearCooldown = () => {
+    clearCooldown.mutate(credential.id, {
+      onSuccess: (res) => {
+        toast.success(res.message)
+      },
+      onError: (err) => {
+        toast.error('退出冷却失败: ' + (err as Error).message)
       },
     })
   }
@@ -440,6 +453,19 @@ export function CredentialCard({
               <RefreshCw className={`h-4 w-4 mr-1 shrink-0 ${forceRefresh.isPending ? 'animate-spin' : ''}`} />
               刷新 Token
             </Button>
+            {isCoolingDown && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full justify-center whitespace-nowrap border-amber-500/60 px-2 text-xs text-amber-700 hover:bg-amber-500/10 dark:text-amber-300 sm:text-sm"
+                onClick={handleClearCooldown}
+                disabled={clearCooldown.isPending || credential.disabled}
+                title={credential.disabled ? '已禁用的凭据无需退出冷却' : '手动清除运行时风控冷却，让该凭据立即重新参与调度'}
+              >
+                <Clock3 className="h-4 w-4 mr-1 shrink-0" />
+                退出冷却
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"

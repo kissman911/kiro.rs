@@ -136,6 +136,13 @@ impl AdminService {
             .map_err(|e| self.classify_error(e, id))
     }
 
+    /// 清除运行时风控冷却
+    pub fn clear_cooldown(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .clear_cooldown(id)
+            .map_err(|e| self.classify_error(e, id))
+    }
+
     pub fn reset_success_count(&self, id: Option<u64>) -> Result<u32, AdminServiceError> {
         self.token_manager
             .reset_success_count(id)

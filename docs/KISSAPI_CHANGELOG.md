@@ -1,3 +1,9 @@
+## 2026.7.3-kiss.1 — manual-cooldown-clear
+
+- Admin API 新增 `POST /api/admin/credentials/:id/clear-cooldown`，可手动清除凭据的运行时风控冷却状态。
+- Admin UI 在“冷却中”的凭据卡片显示“退出冷却”按钮，操作后立即刷新凭据列表。
+- “重置失败”现在也会同时清除运行时冷却状态，避免凭据仍被调度排除。
+
 # KissAPI kiro-rs 二次开发版本记录
 
 这个文件记录 KissAPI 分支每一次面向生产的二次开发版本。每次功能更新或生产镜像发布前，先新增一条记录，再提交代码。

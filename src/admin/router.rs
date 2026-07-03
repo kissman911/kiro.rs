@@ -7,11 +7,11 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, delete_credential, force_refresh_token, get_all_credentials,
-        get_credential_balance, get_load_balancing_mode, get_version_info, reset_all_success_count,
-        reset_failure_count, reset_success_count, set_credential_allow_overage,
-        set_credential_disabled, set_credential_priority, set_credential_rate_limits,
-        set_load_balancing_mode,
+        add_credential, clear_credential_cooldown, delete_credential, force_refresh_token,
+        get_all_credentials, get_credential_balance, get_load_balancing_mode, get_version_info,
+        reset_all_success_count, reset_failure_count, reset_success_count,
+        set_credential_allow_overage, set_credential_disabled, set_credential_priority,
+        set_credential_rate_limits, set_load_balancing_mode,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -27,6 +27,7 @@ use super::{
 /// - `PUT /credentials/:id/allow-overage` - 设置凭据超额模式
 /// - `PUT /credentials/:id/rate-limits` - 设置凭据级限流规则
 /// - `POST /credentials/:id/reset` - 重置失败计数
+/// - `POST /credentials/:id/clear-cooldown` - 清除运行时风控冷却
 /// - `POST /credentials/:id/refresh` - 强制刷新 Token
 /// - `GET /credentials/:id/balance` - 获取凭据余额
 /// - `GET /config/load-balancing` - 获取负载均衡模式
@@ -55,6 +56,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
             put(set_credential_rate_limits),
         )
         .route("/credentials/{id}/reset", post(reset_failure_count))
+        .route(
+            "/credentials/{id}/clear-cooldown",
+            post(clear_credential_cooldown),
+        )
         .route("/credentials/{id}/reset-stats", post(reset_success_count))
         .route("/credentials/reset-stats", post(reset_all_success_count))
         .route("/credentials/{id}/refresh", post(force_refresh_token))
