@@ -28,9 +28,9 @@ pub(crate) const AWS_SDK_JS_VERSION: &str = "1.0.34";
 /// 总重试次数硬上限（避免无限重试）
 const MAX_TOTAL_RETRIES: usize = 9;
 
-/// Kiro 上游 suspicious activity 429 的账号级冷却时间。
-/// 先用保守的 30 分钟，避免继续重试同一账号扩大风控。
-const SUSPICIOUS_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+/// Kiro 上游 suspicious activity 429 的账号级默认冷却时间。
+/// 可通过 config.suspiciousCooldownSeconds 调整；默认 10 分钟，避免继续重试同一账号扩大风控。
+const DEFAULT_SUSPICIOUS_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 /// Kiro API Provider
 ///
@@ -85,6 +85,15 @@ impl KiroProvider {
             tls_backend,
             endpoints,
             default_endpoint,
+        }
+    }
+
+    fn suspicious_rate_limit_cooldown(&self) -> Duration {
+        let seconds = self.token_manager.config().suspicious_cooldown_seconds;
+        if seconds == 0 {
+            DEFAULT_SUSPICIOUS_RATE_LIMIT_COOLDOWN
+        } else {
+            Duration::from_secs(seconds)
         }
     }
 
@@ -336,7 +345,7 @@ impl KiroProvider {
                 );
                 let has_available = self
                     .token_manager
-                    .report_suspicious_rate_limited(ctx.id, SUSPICIOUS_RATE_LIMIT_COOLDOWN);
+                    .report_suspicious_rate_limited(ctx.id, self.suspicious_rate_limit_cooldown());
                 if !has_available {
                     anyhow::bail!(
                         "MCP 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
@@ -561,7 +570,7 @@ impl KiroProvider {
                 );
                 let has_available = self
                     .token_manager
-                    .report_suspicious_rate_limited(ctx.id, SUSPICIOUS_RATE_LIMIT_COOLDOWN);
+                    .report_suspicious_rate_limited(ctx.id, self.suspicious_rate_limit_cooldown());
                 if !has_available {
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
@@ -684,7 +693,7 @@ impl KiroProvider {
                 body
             );
             self.token_manager
-                .report_suspicious_rate_limited(ctx.id, SUSPICIOUS_RATE_LIMIT_COOLDOWN);
+                .report_suspicious_rate_limited(ctx.id, self.suspicious_rate_limit_cooldown());
             anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
         }
 

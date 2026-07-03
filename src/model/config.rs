@@ -98,6 +98,10 @@ pub struct Config {
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
 
+    /// Kiro suspicious activity 429 的运行时冷却秒数，默认 10 分钟
+    #[serde(default = "default_suspicious_cooldown_seconds")]
+    pub suspicious_cooldown_seconds: u64,
+
     /// 是否启用原生化双阶段执行模式（实验）
     #[serde(default)]
     pub native_like_two_phase_flow: bool,
@@ -178,6 +182,10 @@ fn default_load_balancing_mode() -> String {
     "priority".to_string()
 }
 
+fn default_suspicious_cooldown_seconds() -> u64 {
+    10 * 60
+}
+
 fn is_supported_system_platform(platform: &str) -> bool {
     matches!(platform, "darwin" | "win32" | "linux")
 }
@@ -213,6 +221,7 @@ impl Default for Config {
             admin_api_key: None,
             default_rate_limits: None,
             load_balancing_mode: default_load_balancing_mode(),
+            suspicious_cooldown_seconds: default_suspicious_cooldown_seconds(),
             native_like_two_phase_flow: false,
             extract_thinking: default_extract_thinking(),
             default_endpoint: default_endpoint(),
@@ -331,5 +340,27 @@ impl Config {
         fs::write(path, content)
             .with_context(|| format!("写入配置文件失败: {}", path.display()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod suspicious_cooldown_config_tests {
+    use super::*;
+
+    #[test]
+    fn default_suspicious_cooldown_is_ten_minutes() {
+        assert_eq!(Config::default().suspicious_cooldown_seconds, 600);
+    }
+
+    #[test]
+    fn load_suspicious_cooldown_from_config() {
+        let path = std::env::temp_dir().join(format!(
+            "kiro-rs-cooldown-config-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"suspiciousCooldownSeconds":300}"#).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.suspicious_cooldown_seconds, 300);
+        std::fs::remove_file(path).unwrap();
     }
 }

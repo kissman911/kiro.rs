@@ -1,7 +1,7 @@
 {
-  "version": "2026.7.3-kiss.1",
+  "version": "2026.7.3-kiss.2",
   "channel": "kissapi",
-  "codename": "manual-cooldown-clear",
+  "codename": "configurable-cooldown",
   "date": "2026-07-03",
-  "summary": "Add Admin API and UI action to manually clear runtime credential cooldown."
+  "summary": "Make suspicious activity cooldown configurable with a 10-minute default."
 }

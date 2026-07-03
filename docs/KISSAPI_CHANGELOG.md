@@ -1,3 +1,9 @@
+## 2026.7.3-kiss.2 — configurable-cooldown
+
+- 新增 `config.suspiciousCooldownSeconds` 配置项，控制 suspicious activity 429 触发后的运行时冷却秒数。
+- 默认冷却从硬编码 30 分钟改为 10 分钟（600 秒）。
+- 配置值为 0 时回退到默认 600 秒，避免误配成完全不冷却。
+
 ## 2026.7.3-kiss.1 — manual-cooldown-clear
 
 - Admin API 新增 `POST /api/admin/credentials/:id/clear-cooldown`，可手动清除凭据的运行时风控冷却状态。
