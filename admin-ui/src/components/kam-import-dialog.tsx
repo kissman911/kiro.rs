@@ -456,13 +456,17 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
           <div className="space-y-2">
             <label className="text-sm font-medium">KAM 导出 JSON</label>
             <textarea
-              placeholder={'粘贴 Kiro Account Manager 导出的 JSON\n\n支持 KAM 1.8.3+ 新版平铺格式：\n[\n  {\n    "email": "...",\n    "refreshToken": "...",\n    "clientId": "...",\n    "clientSecret": "...",\n    "region": "us-east-1"\n  }\n]\n\n支持 authMethod=external_idp + tokenEndpoint/clientId/scopes 的 M365/Entra ID 企业 SSO 账号\n\n也支持旧版嵌套格式：\n{\n  "version": "1.5.0",\n  "accounts": [\n    {\n      "email": "...",\n      "credentials": {\n        "refreshToken": "...",\n        "clientId": "...",\n        "clientSecret": "...",\n        "region": "us-east-1"\n      }\n    }\n  ]\n}'}
+              placeholder={'粘贴 Kiro Account Manager 导出的 JSON\n\n支持 KAM 1.8.3+ 新版平铺格式：\n[\n  {\n    "email": "...",\n    "refreshToken": "...",\n    "clientId": "...",\n    "clientSecret": "...",\n    "region": "us-east-1",\n    "proxyUrl": "socks5://1.2.3.4:8000",\n    "proxyUsername": "kmkmhuyw",\n    "proxyPassword": "3d1it5o1kxnu"\n  }\n]\n\n支持 authMethod=external_idp + tokenEndpoint/clientId/scopes 的 M365/Entra ID 企业 SSO 账号\n\n也支持旧版嵌套格式：\n{\n  "version": "1.5.0",\n  "accounts": [\n    {\n      "email": "...",\n      "credentials": {\n        "refreshToken": "...",\n        "clientId": "...",\n        "clientSecret": "...",\n        "region": "us-east-1",\n        "proxyUrl": "socks5://1.2.3.4:8000",\n        "proxyUsername": "kmkmhuyw",\n        "proxyPassword": "3d1it5o1kxnu"\n      }\n    }\n  ]\n}'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}
               className="flex min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
             />
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            💡 代理 JSON 可复制：<code>{'\"proxyUrl\":\"socks5://1.2.3.4:8000\",\"proxyUsername\":\"kmkmhuyw\",\"proxyPassword\":\"3d1it5o1kxnu\"'}</code>
+          </p>
 
           {/* 解析预览 */}
           {parseError && (

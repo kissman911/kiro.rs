@@ -19,6 +19,9 @@ interface AddCredentialDialogProps {
 
 type AuthMethod = 'social' | 'idc' | 'api_key' | 'external_idp'
 
+const DEFAULT_PROXY_USERNAME = 'kmkmhuyw'
+const DEFAULT_PROXY_PASSWORD = '3d1it5o1kxnu'
+
 export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogProps) {
   const [refreshToken, setRefreshToken] = useState('')
   const [kiroApiKey, setKiroApiKey] = useState('')
@@ -33,8 +36,8 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [priority, setPriority] = useState('0')
   const [machineId, setMachineId] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
-  const [proxyUsername, setProxyUsername] = useState('')
-  const [proxyPassword, setProxyPassword] = useState('')
+  const [proxyUsername, setProxyUsername] = useState(DEFAULT_PROXY_USERNAME)
+  const [proxyPassword, setProxyPassword] = useState(DEFAULT_PROXY_PASSWORD)
   const [endpoint, setEndpoint] = useState('')
   const [allowOverage, setAllowOverage] = useState(false)
   const [rateLimitWindow, setRateLimitWindow] = useState('')
@@ -56,8 +59,8 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setPriority('0')
     setMachineId('')
     setProxyUrl('')
-    setProxyUsername('')
-    setProxyPassword('')
+    setProxyUsername(DEFAULT_PROXY_USERNAME)
+    setProxyPassword(DEFAULT_PROXY_PASSWORD)
     setEndpoint('')
     setAllowOverage(false)
     setRateLimitWindow('')
