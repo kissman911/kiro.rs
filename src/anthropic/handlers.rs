@@ -136,6 +136,24 @@ pub async fn get_models() -> impl IntoResponse {
 
     let models = vec![
         Model {
+            id: "claude-sonnet-5".to_string(),
+            object: "model".to_string(),
+            created: 1782950400, // Jul 2, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Sonnet 5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 128_000,
+        },
+        Model {
+            id: "claude-sonnet-5-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1782950400, // Jul 2, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Sonnet 5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 128_000,
+        },
+        Model {
             id: "claude-opus-4-8".to_string(),
             object: "model".to_string(),
             created: 1779897600, // May 28, 2026
@@ -374,6 +392,7 @@ pub async fn post_messages(
 
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+    normalize_thinking_for_model(&mut payload);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -428,19 +447,16 @@ pub async fn post_messages(
         payload.tools,
     ) as i32;
 
-    // 检查是否启用了thinking
-    let thinking_enabled = payload
-        .thinking
-        .as_ref()
-        .map(|t| t.is_enabled())
-        .unwrap_or(false);
+    // 检查是否需要解析 thinking 块。Sonnet 5 默认会输出 adaptive thinking，
+    // 即使请求没有显式 thinking 字段，也要在响应侧拆分 thinking block。
+    let parse_thinking = should_parse_thinking(&payload.model, payload.thinking.as_ref());
 
     if payload.stream {
         let input = StreamExecutionInput {
             request_body: &request_body,
             model: &payload.model,
             input_tokens,
-            thinking_enabled,
+            thinking_enabled: parse_thinking,
             stream_mode: StreamMode::Direct,
             tool_name_map,
         };
@@ -454,7 +470,7 @@ pub async fn post_messages(
                 .await
         }
     } else {
-        let extract_thinking = state.extract_thinking && thinking_enabled;
+        let extract_thinking = state.extract_thinking && parse_thinking;
         if state.native_like_two_phase_flow {
             TwoPhaseExecutor::new(provider.clone())
                 .execute_non_stream(
@@ -820,8 +836,52 @@ pub(crate) async fn handle_non_stream_request(
     .await
 }
 
+fn model_uses_default_thinking(model: &str) -> bool {
+    let model_lower = model.to_lowercase();
+    model_lower.contains("sonnet-5")
+        || model_lower.contains("sonnet.5")
+        || model_lower.contains("sonnet 5")
+}
+
+fn normalize_thinking_for_model(payload: &mut MessagesRequest) {
+    if !model_uses_default_thinking(&payload.model) {
+        return;
+    }
+
+    if payload
+        .thinking
+        .as_ref()
+        .is_some_and(|t| t.thinking_type == "enabled")
+    {
+        tracing::info!(
+            model = %payload.model,
+            "Sonnet 5 不支持 enabled thinking，自动改写为 adaptive"
+        );
+        payload.thinking = Some(Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        let effort = payload
+            .effort
+            .as_ref()
+            .map(|e| e.level.clone())
+            .or_else(|| payload.output_config.as_ref().map(|c| c.effort.clone()))
+            .unwrap_or_else(|| "high".to_string());
+        payload.output_config = Some(OutputConfig { effort });
+    }
+}
+
+fn should_parse_thinking(model: &str, thinking: Option<&Thinking>) -> bool {
+    if thinking.is_some_and(|t| t.thinking_type == "disabled") {
+        return false;
+    }
+
+    thinking.map(|t| t.is_enabled()).unwrap_or(false) || model_uses_default_thinking(model)
+}
+
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
 ///
+/// - Sonnet 5：只支持 adaptive thinking，不能使用 enabled + budget_tokens
 /// - Opus 4.8 / 4.7：只支持 adaptive thinking，不能使用 enabled + budget_tokens
 /// - Opus 4.6 / Sonnet 4.6：优先使用 adaptive thinking
 /// - 旧模型：继续使用 enabled + budget_tokens
@@ -833,10 +893,14 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
 
     let is_opus = model_lower.contains("opus");
     let is_sonnet = model_lower.contains("sonnet");
+    let is_sonnet_5 = model_lower.contains("sonnet-5")
+        || model_lower.contains("sonnet.5")
+        || model_lower.contains("sonnet 5");
     let is_4_8 = model_lower.contains("4-8") || model_lower.contains("4.8");
     let is_4_7 = model_lower.contains("4-7") || model_lower.contains("4.7");
     let is_4_6 = model_lower.contains("4-6") || model_lower.contains("4.6");
-    let use_adaptive = (is_opus && (is_4_8 || is_4_7 || is_4_6)) || (is_sonnet && is_4_6);
+    let use_adaptive =
+        (is_opus && (is_4_8 || is_4_7 || is_4_6)) || (is_sonnet && (is_sonnet_5 || is_4_6));
 
     let thinking_type = if use_adaptive { "adaptive" } else { "enabled" };
 
@@ -923,6 +987,7 @@ pub async fn post_messages_cc(
 
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
+    normalize_thinking_for_model(&mut payload);
 
     // 检查是否为 WebSearch 请求
     if websearch::has_web_search_tool(&payload) {
@@ -977,19 +1042,16 @@ pub async fn post_messages_cc(
         payload.tools,
     ) as i32;
 
-    // 检查是否启用了thinking
-    let thinking_enabled = payload
-        .thinking
-        .as_ref()
-        .map(|t| t.is_enabled())
-        .unwrap_or(false);
+    // 检查是否需要解析 thinking 块。Sonnet 5 默认会输出 adaptive thinking，
+    // 即使请求没有显式 thinking 字段，也要在响应侧拆分 thinking block。
+    let parse_thinking = should_parse_thinking(&payload.model, payload.thinking.as_ref());
 
     if payload.stream {
         let input = StreamExecutionInput {
             request_body: &request_body,
             model: &payload.model,
             input_tokens,
-            thinking_enabled,
+            thinking_enabled: parse_thinking,
             stream_mode: StreamMode::Buffered,
             tool_name_map,
         };
@@ -1003,7 +1065,7 @@ pub async fn post_messages_cc(
                 .await
         }
     } else {
-        let extract_thinking = state.extract_thinking && thinking_enabled;
+        let extract_thinking = state.extract_thinking && parse_thinking;
         if state.native_like_two_phase_flow {
             TwoPhaseExecutor::new(provider.clone())
                 .execute_non_stream(
