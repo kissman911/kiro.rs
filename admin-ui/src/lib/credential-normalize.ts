@@ -56,7 +56,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function normalizePrimitive(value: unknown): string | number | boolean | null | undefined {
   if (value === undefined || value === null || value === '') return undefined
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
-  return String(value)
+  return undefined
 }
 
 export function normalizeCredentialFields(raw: unknown): NormalizedCredentialInput {
@@ -64,7 +64,8 @@ export function normalizeCredentialFields(raw: unknown): NormalizedCredentialInp
 
   const normalized: Record<string, unknown> = { ...raw }
   for (const [snakeKey, camelKey] of Object.entries(FIELD_ALIASES)) {
-    if (normalized[camelKey] === undefined && normalized[snakeKey] !== undefined) {
+    const current = normalized[camelKey]
+    if ((current === undefined || current === '') && normalized[snakeKey] !== undefined) {
       normalized[camelKey] = normalized[snakeKey]
     }
   }

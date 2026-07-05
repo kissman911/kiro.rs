@@ -73,6 +73,7 @@ pub struct CredentialStatusItem {
     pub has_proxy: bool,
     /// 代理 URL（用于前端展示）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "proxy_url")]
     pub proxy_url: Option<String>,
     /// Token 刷新连续失败次数
     pub refresh_failure_count: u32,
@@ -85,6 +86,7 @@ pub struct CredentialStatusItem {
     pub allow_overage: bool,
     /// 凭据级限流规则（未配置时为 None，运行时会回退到全局 defaultRateLimits）
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "rate_limits")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
     /// 运行时冷却截止时间（RFC3339，仅内存状态）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,7 +119,7 @@ pub struct SetPriorityRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SetRateLimitsRequest {
     /// 新限流规则；传 null 或空数组表示清空凭据级限流并回退到全局默认
-    #[serde(default)]
+    #[serde(default, alias = "rate_limits")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
 }
 
@@ -134,28 +136,36 @@ pub struct SetAllowOverageRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AddCredentialRequest {
     /// 刷新令牌（OAuth 凭据必填，API Key 凭据不需要）
+    #[serde(alias = "refresh_token")]
     pub refresh_token: Option<String>,
 
     /// 访问令牌（导入外部缓存时可保留）
+    #[serde(alias = "access_token")]
     pub access_token: Option<String>,
 
     /// Profile ARN（Builder-ID / IdC / External IdP 可选但建议保留）
+    #[serde(alias = "profile_arn")]
     pub profile_arn: Option<String>,
 
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
+    #[serde(alias = "auth_method")]
     pub auth_method: String,
 
     /// OIDC Client ID（IdC 认证需要）
+    #[serde(alias = "client_id")]
     pub client_id: Option<String>,
 
     /// OIDC Client Secret（IdC 认证需要）
+    #[serde(alias = "client_secret")]
     pub client_secret: Option<String>,
 
     /// External IdP token endpoint（M365 / Entra ID 企业 SSO 需要）
+    #[serde(alias = "token_endpoint")]
     pub token_endpoint: Option<String>,
 
     /// External IdP issuer URL（可选）
+    #[serde(alias = "issuer_url")]
     pub issuer_url: Option<String>,
 
     /// External IdP OAuth scopes（可选）
@@ -173,30 +183,36 @@ pub struct AddCredentialRequest {
     pub region: Option<String>,
 
     /// 凭据级 Auth Region（用于 Token 刷新）
+    #[serde(alias = "auth_region")]
     pub auth_region: Option<String>,
 
     /// 凭据级 API Region（用于 API 请求）
+    #[serde(alias = "api_region")]
     pub api_region: Option<String>,
 
     /// 凭据级 Machine ID（可选，64 位字符串）
     /// 未配置时回退到 config.json 的 machineId
+    #[serde(alias = "machine_id")]
     pub machine_id: Option<String>,
 
     /// 用户邮箱（可选，用于前端显示）
     pub email: Option<String>,
 
     /// 凭据级代理 URL（可选，特殊值 "direct" 表示不使用代理）
+    #[serde(alias = "proxy_url")]
     pub proxy_url: Option<String>,
 
     /// 凭据级代理认证用户名（可选）
+    #[serde(alias = "proxy_username")]
     pub proxy_username: Option<String>,
 
     /// 凭据级代理认证密码（可选）
+    #[serde(alias = "proxy_password")]
     pub proxy_password: Option<String>,
 
     /// Kiro API Key（API Key 凭据必填，格式: ksk_xxxxxxxx）
     /// 设置后直接作为 Bearer Token 使用，无需 refreshToken
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "kiro_api_key")]
     pub kiro_api_key: Option<String>,
 
     /// 端点名称（可选，未配置时使用 config.defaultEndpoint）
@@ -204,11 +220,11 @@ pub struct AddCredentialRequest {
     pub endpoint: Option<String>,
 
     /// 是否允许超额使用（可选，默认 false）
-    #[serde(default)]
+    #[serde(default, alias = "allow_overage")]
     pub allow_overage: Option<bool>,
 
     /// 凭据级限流规则（可选）
-    #[serde(default)]
+    #[serde(default, alias = "rate_limits")]
     pub rate_limits: Option<Vec<RateLimitRule>>,
 }
 
