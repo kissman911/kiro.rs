@@ -240,9 +240,9 @@ impl AdminService {
         let email = req.email.clone();
         let new_cred = KiroCredentials {
             id: None,
-            access_token: None,
+            access_token: req.access_token,
             refresh_token: req.refresh_token,
-            profile_arn: None,
+            profile_arn: req.profile_arn,
             expires_at: None,
             auth_method: Some(req.auth_method),
             provider: req.provider,

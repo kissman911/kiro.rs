@@ -136,6 +136,12 @@ pub struct AddCredentialRequest {
     /// 刷新令牌（OAuth 凭据必填，API Key 凭据不需要）
     pub refresh_token: Option<String>,
 
+    /// 访问令牌（导入外部缓存时可保留）
+    pub access_token: Option<String>,
+
+    /// Profile ARN（Builder-ID / IdC / External IdP 可选但建议保留）
+    pub profile_arn: Option<String>,
+
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
     pub auth_method: String,

@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { useCredentials, useAddCredential, useDeleteCredential } from '@/hooks/use-credentials'
 import { getCredentialBalance, setCredentialDisabled } from '@/api/credentials'
 import { extractErrorMessage, sha256Hex } from '@/lib/utils'
+import { normalizeCredentialFields } from '@/lib/credential-normalize'
 
 interface BatchImportDialogProps {
   open: boolean
@@ -20,8 +21,10 @@ interface BatchImportDialogProps {
 
 interface CredentialInput {
   refreshToken?: string
+  accessToken?: string
   clientId?: string
   clientSecret?: string
+  profileArn?: string
   tokenEndpoint?: string
   issuerUrl?: string
   scopes?: string
@@ -97,7 +100,8 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
     let credentials: CredentialInput[]
     try {
       const parsed = JSON.parse(jsonInput)
-      credentials = Array.isArray(parsed) ? parsed : [parsed]
+      const rawList = Array.isArray(parsed) ? parsed : [parsed]
+      credentials = rawList.map(normalizeCredentialFields)
     } catch (error) {
       toast.error('JSON 格式错误: ' + extractErrorMessage(error))
       return
@@ -291,6 +295,8 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
 
           const addedCred = await addCredential({
             refreshToken: token,
+            accessToken: cred.accessToken?.trim() || undefined,
+            profileArn: cred.profileArn?.trim() || undefined,
             authMethod,
             authRegion: cred.authRegion?.trim() || cred.region?.trim() || undefined,
             apiRegion: cred.apiRegion?.trim() || undefined,
@@ -446,7 +452,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               JSON 格式凭据
             </label>
             <textarea
-              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n代理字段示例: [{"refreshToken":"...","proxyUrl":"socks5://1.2.3.4:8000","proxyUsername":"kmkmhuyw","proxyPassword":"3d1it5o1kxnu"}]\n\n支持 region 字段自动映射为 authRegion'}
+              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n代理字段示例: [{"refreshToken":"...","proxyUrl":"socks5://1.2.3.4:8000","proxyUsername":"kmkmhuyw","proxyPassword":"3d1it5o1kxnu"}]\n\n也支持原生 Kiro/导出缓存格式（snake_case）: [{"refresh_token":"...","client_id":"...","profile_arn":"...","token_endpoint":"...","auth_method":"external_idp"}]\n\n支持 region 字段自动映射为 authRegion'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}

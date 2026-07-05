@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { useCredentials, useAddCredential, useDeleteCredential } from '@/hooks/use-credentials'
 import { getCredentialBalance, setCredentialDisabled } from '@/api/credentials'
 import { extractErrorMessage, sha256Hex } from '@/lib/utils'
+import { normalizeCredentialFields } from '@/lib/credential-normalize'
 
 interface KamImportDialogProps {
   open: boolean
@@ -25,8 +26,10 @@ interface KamAccount {
   nickname?: string
   credentials: {
     refreshToken: string
+    accessToken?: string
     clientId?: string
     clientSecret?: string
+    profileArn?: string
     tokenEndpoint?: string
     issuerUrl?: string
     scopes?: string
@@ -59,54 +62,36 @@ interface VerificationResult {
 function normalizeKamAccount(item: unknown): unknown {
   if (typeof item !== 'object' || item === null) return item
   const obj = item as Record<string, unknown>
-  // 新格式：refreshToken 直接在账号对象上，无 credentials 嵌套
-  if (typeof obj.refreshToken === 'string' && typeof obj.credentials === 'undefined') {
-    const email = typeof obj.email === 'string' ? obj.email : undefined
-    const userId =
-      typeof obj.userId === 'string' || obj.userId === null ? (obj.userId as string | null) : undefined
-    const nickname =
-      typeof obj.nickname === 'string'
-        ? obj.nickname
-        : typeof obj.label === 'string'
-          ? (obj.label as string)
-          : undefined
-    const status = typeof obj.status === 'string' ? obj.status : undefined
-    const machineId = typeof obj.machineId === 'string' ? obj.machineId : undefined
-    const clientId = typeof obj.clientId === 'string' ? obj.clientId : undefined
-    const clientSecret = typeof obj.clientSecret === 'string' ? obj.clientSecret : undefined
-    const tokenEndpoint = typeof obj.tokenEndpoint === 'string' ? obj.tokenEndpoint : undefined
-    const issuerUrl = typeof obj.issuerUrl === 'string' ? obj.issuerUrl : undefined
-    const scopes = typeof obj.scopes === 'string' ? obj.scopes : undefined
-    const provider = typeof obj.provider === 'string' ? obj.provider : undefined
-    const proxyUrl = typeof obj.proxyUrl === 'string' ? obj.proxyUrl : undefined
-    const proxyUsername = typeof obj.proxyUsername === 'string' ? obj.proxyUsername : undefined
-    const proxyPassword = typeof obj.proxyPassword === 'string' ? obj.proxyPassword : undefined
-    const region = typeof obj.region === 'string' ? obj.region : undefined
-    const authMethod = typeof obj.authMethod === 'string' ? obj.authMethod : undefined
-    const startUrl = typeof obj.startUrl === 'string' ? obj.startUrl : undefined
-
+  const normalized = normalizeCredentialFields(obj)
+  // 新格式：refreshToken 直接在账号对象上，无 credentials 嵌套；同时兼容原生 snake_case 导出
+  if (typeof normalized.refreshToken === 'string' && typeof obj.credentials === 'undefined') {
     return {
-      email,
-      userId,
-      nickname,
-      status,
-      machineId,
+      email: normalized.email,
+      userId: normalized.userId,
+      nickname: normalized.nickname || normalized.label,
+      status: normalized.status,
+      machineId: normalized.machineId,
       credentials: {
-        refreshToken: obj.refreshToken,
-        clientId,
-        clientSecret,
-        tokenEndpoint,
-        issuerUrl,
-        scopes,
-        provider,
-        proxyUrl,
-        proxyUsername,
-        proxyPassword,
-        region,
-        authMethod,
-        startUrl,
+        refreshToken: normalized.refreshToken,
+        accessToken: normalized.accessToken,
+        clientId: normalized.clientId,
+        clientSecret: normalized.clientSecret,
+        profileArn: normalized.profileArn,
+        tokenEndpoint: normalized.tokenEndpoint,
+        issuerUrl: normalized.issuerUrl,
+        scopes: normalized.scopes,
+        provider: normalized.provider,
+        proxyUrl: normalized.proxyUrl,
+        proxyUsername: normalized.proxyUsername,
+        proxyPassword: normalized.proxyPassword,
+        region: normalized.region,
+        authMethod: normalized.authMethod,
+        startUrl: normalized.startUrl,
       },
     }
+  }
+  if (typeof obj.credentials === 'object' && obj.credentials !== null) {
+    return { ...obj, credentials: normalizeCredentialFields(obj.credentials) }
   }
   return item
 }
@@ -309,6 +294,8 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
 
           const addedCred = await addCredential({
             refreshToken: token,
+            accessToken: cred.accessToken?.trim() || undefined,
+            profileArn: cred.profileArn?.trim() || undefined,
             authMethod,
             authRegion: cred.region?.trim() || undefined,
             clientId,
@@ -456,7 +443,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
           <div className="space-y-2">
             <label className="text-sm font-medium">KAM 导出 JSON</label>
             <textarea
-              placeholder={'粘贴 Kiro Account Manager 导出的 JSON\n\n支持 KAM 1.8.3+ 新版平铺格式：\n[\n  {\n    "email": "...",\n    "refreshToken": "...",\n    "clientId": "...",\n    "clientSecret": "...",\n    "region": "us-east-1",\n    "proxyUrl": "socks5://1.2.3.4:8000",\n    "proxyUsername": "kmkmhuyw",\n    "proxyPassword": "3d1it5o1kxnu"\n  }\n]\n\n支持 authMethod=external_idp + tokenEndpoint/clientId/scopes 的 M365/Entra ID 企业 SSO 账号\n\n也支持旧版嵌套格式：\n{\n  "version": "1.5.0",\n  "accounts": [\n    {\n      "email": "...",\n      "credentials": {\n        "refreshToken": "...",\n        "clientId": "...",\n        "clientSecret": "...",\n        "region": "us-east-1",\n        "proxyUrl": "socks5://1.2.3.4:8000",\n        "proxyUsername": "kmkmhuyw",\n        "proxyPassword": "3d1it5o1kxnu"\n      }\n    }\n  ]\n}'}
+              placeholder={'粘贴 Kiro Account Manager 导出的 JSON\n\n支持 KAM 1.8.3+ 新版平铺格式：\n[\n  {\n    "email": "...",\n    "refreshToken": "...",\n    "clientId": "...",\n    "clientSecret": "...",\n    "region": "us-east-1",\n    "proxyUrl": "socks5://1.2.3.4:8000",\n    "proxyUsername": "kmkmhuyw",\n    "proxyPassword": "3d1it5o1kxnu"\n  }\n]\n\n支持 authMethod=external_idp + tokenEndpoint/clientId/scopes 的 M365/Entra ID 企业 SSO 账号；也支持 refresh_token/client_id/profile_arn/token_endpoint 等 snake_case 字段\n\n也支持旧版嵌套格式：\n{\n  "version": "1.5.0",\n  "accounts": [\n    {\n      "email": "...",\n      "credentials": {\n        "refreshToken": "...",\n        "clientId": "...",\n        "clientSecret": "...",\n        "region": "us-east-1",\n        "proxyUrl": "socks5://1.2.3.4:8000",\n        "proxyUsername": "kmkmhuyw",\n        "proxyPassword": "3d1it5o1kxnu"\n      }\n    }\n  ]\n}'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}
