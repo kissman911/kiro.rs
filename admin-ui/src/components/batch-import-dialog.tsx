@@ -40,58 +40,6 @@ interface CredentialInput {
   allowOverage?: boolean
 }
 
-// 把原生 Kiro token 缓存格式（snake_case）归一化为内部 camelCase 结构
-// 兼容字段：refresh_token / access_token / client_id / client_secret /
-// token_endpoint / issuer_url / auth_method / kiro_api_key / proxy_* /
-// auth_region / api_region / machine_id / allow_overage 等；同时保留已是 camelCase 的输入
-function normalizeCredential(raw: Record<string, unknown>): CredentialInput {
-  if (!raw || typeof raw !== 'object') return {}
-  const pick = (...keys: string[]): unknown => {
-    for (const k of keys) {
-      const v = raw[k]
-      if (v !== undefined && v !== null && v !== '') return v
-    }
-    return undefined
-  }
-  const str = (...keys: string[]): string | undefined => {
-    const v = pick(...keys)
-    return typeof v === 'string' ? v : v !== undefined ? String(v) : undefined
-  }
-  const num = (...keys: string[]): number | undefined => {
-    const v = pick(...keys)
-    if (typeof v === 'number') return v
-    if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v)
-    return undefined
-  }
-  const bool = (...keys: string[]): boolean | undefined => {
-    const v = pick(...keys)
-    if (typeof v === 'boolean') return v
-    if (typeof v === 'string') return v.toLowerCase() === 'true'
-    return undefined
-  }
-  return {
-    refreshToken: str('refreshToken', 'refresh_token'),
-    clientId: str('clientId', 'client_id'),
-    clientSecret: str('clientSecret', 'client_secret'),
-    tokenEndpoint: str('tokenEndpoint', 'token_endpoint'),
-    issuerUrl: str('issuerUrl', 'issuer_url'),
-    scopes: str('scopes'),
-    provider: str('provider'),
-    proxyUrl: str('proxyUrl', 'proxy_url'),
-    proxyUsername: str('proxyUsername', 'proxy_username'),
-    proxyPassword: str('proxyPassword', 'proxy_password'),
-    region: str('region'),
-    authRegion: str('authRegion', 'auth_region'),
-    apiRegion: str('apiRegion', 'api_region'),
-    priority: num('priority'),
-    machineId: str('machineId', 'machine_id'),
-    kiroApiKey: str('kiroApiKey', 'kiro_api_key'),
-    authMethod: str('authMethod', 'auth_method'),
-    endpoint: str('endpoint'),
-    allowOverage: bool('allowOverage', 'allow_overage'),
-  }
-}
-
 interface VerificationResult {
   index: number
   status: 'pending' | 'checking' | 'verifying' | 'verified' | 'duplicate' | 'failed'
@@ -149,8 +97,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
     let credentials: CredentialInput[]
     try {
       const parsed = JSON.parse(jsonInput)
-      const rawList = Array.isArray(parsed) ? parsed : [parsed]
-      credentials = rawList.map(item => normalizeCredential(item as Record<string, unknown>))
+      credentials = Array.isArray(parsed) ? parsed : [parsed]
     } catch (error) {
       toast.error('JSON 格式错误: ' + extractErrorMessage(error))
       return
@@ -499,7 +446,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
               JSON 格式凭据
             </label>
             <textarea
-              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n代理字段示例: [{"refreshToken":"...","proxyUrl":"socks5://1.2.3.4:8000","proxyUsername":"kmkmhuyw","proxyPassword":"3d1it5o1kxnu"}]\n\n也支持原生 Kiro 缓存格式（snake_case）: [{"refresh_token":"...","client_id":"...","token_endpoint":"...","auth_method":"external_idp"}]\n\n支持 region 字段自动映射为 authRegion'}
+              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n代理字段示例: [{"refreshToken":"...","proxyUrl":"socks5://1.2.3.4:8000","proxyUsername":"kmkmhuyw","proxyPassword":"3d1it5o1kxnu"}]\n\n支持 region 字段自动映射为 authRegion'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}
