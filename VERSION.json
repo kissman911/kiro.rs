@@ -1,7 +1,7 @@
 {
-  "version": "2026.7.3-kiss.2",
+  "version": "2026.7.6-kiss.1",
   "channel": "kissapi",
-  "codename": "configurable-cooldown",
-  "date": "2026-07-03",
-  "summary": "Make suspicious activity cooldown configurable with a 10-minute default."
+  "codename": "credential-display-name",
+  "date": "2026-07-06",
+  "summary": "Admin UI 支持为每个凭据设置自定义显示名称，替代难以区分的“凭据+编号”。"
 }

@@ -9,7 +9,7 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, SetAllowOverageRequest, SetDisabledRequest,
+        AddCredentialRequest, SetAllowOverageRequest, SetDisabledRequest, SetDisplayNameRequest,
         SetLoadBalancingModeRequest, SetPriorityRequest, SetRateLimitsRequest, SuccessResponse,
         VersionInfoResponse,
     },
@@ -108,6 +108,19 @@ pub async fn set_credential_rate_limits(
         .set_credential_rate_limits(id, payload.rate_limits)
     {
         Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 限流规则已更新", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// PUT /api/admin/credentials/:id/display-name
+/// 设置凭据自定义显示名称
+pub async fn set_credential_display_name(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetDisplayNameRequest>,
+) -> impl IntoResponse {
+    match state.service.set_display_name(id, payload.display_name) {
+        Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 显示名称已更新", id))).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

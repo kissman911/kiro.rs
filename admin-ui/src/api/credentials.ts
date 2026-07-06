@@ -7,6 +7,7 @@ import type {
   SetDisabledRequest,
   SetPriorityRequest,
   SetAllowOverageRequest,
+  SetDisplayNameRequest,
   SetRateLimitsRequest,
   AddCredentialRequest,
   AddCredentialResponse,
@@ -57,6 +58,18 @@ export async function setCredentialPriority(
   const { data } = await api.post<SuccessResponse>(
     `/credentials/${id}/priority`,
     { priority } as SetPriorityRequest
+  )
+  return data
+}
+
+// 设置凭据显示名称
+export async function setCredentialDisplayName(
+  id: number,
+  displayName: string | null
+): Promise<SuccessResponse> {
+  const { data } = await api.put<SuccessResponse>(
+    `/credentials/${id}/display-name`,
+    { displayName } as SetDisplayNameRequest
   )
   return data
 }

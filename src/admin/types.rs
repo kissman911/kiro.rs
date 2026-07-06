@@ -65,6 +65,9 @@ pub struct CredentialStatusItem {
     pub masked_api_key: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
+    /// 自定义显示名称（Admin UI 展示用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// API 调用成功次数
     pub success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）
@@ -129,6 +132,15 @@ pub struct SetRateLimitsRequest {
 pub struct SetAllowOverageRequest {
     /// 是否允许超额使用
     pub allow_overage: bool,
+}
+
+/// 设置凭据显示名称请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetDisplayNameRequest {
+    /// 新显示名称；传 null 或空字符串表示清除
+    #[serde(default, alias = "display_name")]
+    pub display_name: Option<String>,
 }
 
 /// 添加凭据请求
@@ -197,6 +209,10 @@ pub struct AddCredentialRequest {
 
     /// 用户邮箱（可选，用于前端显示）
     pub email: Option<String>,
+
+    /// 自定义显示名称（可选，仅用于 Admin UI 展示）
+    #[serde(alias = "display_name")]
+    pub display_name: Option<String>,
 
     /// 凭据级代理 URL（可选，特殊值 "direct" 表示不使用代理）
     #[serde(alias = "proxy_url")]

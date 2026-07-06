@@ -80,6 +80,7 @@ impl AdminService {
                 api_key_hash: entry.api_key_hash,
                 masked_api_key: entry.masked_api_key,
                 email: entry.email,
+                display_name: entry.display_name,
                 success_count: entry.success_count,
                 last_used_at: entry.last_used_at.clone(),
                 has_proxy: entry.has_proxy,
@@ -257,6 +258,7 @@ impl AdminService {
             api_region: req.api_region,
             machine_id: req.machine_id,
             email: req.email,
+            display_name: req.display_name,
             subscription_title: None, // 将在首次获取使用额度时自动更新
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
@@ -300,6 +302,17 @@ impl AdminService {
         }
         self.save_balance_cache();
         Ok(())
+    }
+
+    /// 设置凭据自定义显示名称
+    pub fn set_display_name(
+        &self,
+        id: u64,
+        display_name: Option<String>,
+    ) -> Result<(), AdminServiceError> {
+        self.token_manager
+            .set_display_name(id, display_name)
+            .map_err(|e| self.classify_error(e, id))
     }
 
     /// 设置凭据级限流规则

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge, Mail, Clock3 } from 'lucide-react'
+import { RefreshCw, ChevronUp, ChevronDown, Wallet, Trash2, Loader2, Gauge, Mail, Clock3, Tag } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +20,7 @@ import {
   useSetDisabled,
   useSetPriority,
   useSetAllowOverage,
+  useSetDisplayName,
   useResetFailure,
   useClearCooldown,
   useDeleteCredential,
@@ -79,10 +80,13 @@ export function CredentialCard({
   const [priorityValue, setPriorityValue] = useState(String(credential.priority))
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showRateLimitDialog, setShowRateLimitDialog] = useState(false)
+  const [editingName, setEditingName] = useState(false)
+  const [nameValue, setNameValue] = useState(credential.displayName ?? '')
 
   const setDisabled = useSetDisabled()
   const setPriority = useSetPriority()
   const setAllowOverage = useSetAllowOverage()
+  const setDisplayName = useSetDisplayName()
   const resetFailure = useResetFailure()
   const clearCooldown = useClearCooldown()
   const deleteCredential = useDeleteCredential()
@@ -119,6 +123,20 @@ export function CredentialCard({
         onError: (err) => {
           toast.error('操作失败: ' + (err as Error).message)
         },
+      }
+    )
+  }
+
+  const handleSaveName = () => {
+    const trimmed = nameValue.trim()
+    setDisplayName.mutate(
+      { id: credential.id, displayName: trimmed === '' ? null : trimmed },
+      {
+        onSuccess: (res) => {
+          toast.success(res.message)
+          setEditingName(false)
+        },
+        onError: (err) => toast.error('操作失败: ' + (err as Error).message),
       }
     )
   }
@@ -212,11 +230,12 @@ export function CredentialCard({
             <div className="min-w-0 flex-1">
               <CardTitle className="text-lg flex flex-wrap items-center gap-2 leading-7">
                 <span
-                  className={credential.email ? 'min-w-0 max-w-full truncate' : 'text-muted-foreground'}
-                  title={credential.email || `凭据 #${credential.id}`}
+                  className={credential.displayName || credential.email ? 'min-w-0 max-w-full truncate' : 'text-muted-foreground'}
+                  title={credential.displayName || credential.email || `凭据 #${credential.id}`}
                 >
-                  {credential.email || `凭据 #${credential.id}`}
+                  {credential.displayName || credential.email || `凭据 #${credential.id}`}
                 </span>
+                <span className="text-xs text-muted-foreground font-normal shrink-0">#{credential.id}</span>
                 {credential.isCurrent && (
                   <Badge variant="success">当前</Badge>
                 )}
@@ -279,6 +298,60 @@ export function CredentialCard({
               {!credential.email && (
                 <span className="text-xs text-muted-foreground">
                   可通过 KAM 导入带 email 的凭据，或点击“刷新 Token”尝试自动识别
+                </span>
+              )}
+            </div>
+            <div className="col-span-2 flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+              <Tag className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span className="text-muted-foreground shrink-0">名称：</span>
+              {editingName ? (
+                <div className="flex items-center gap-1 flex-1 min-w-0">
+                  <Input
+                    value={nameValue}
+                    onChange={(e) => setNameValue(e.target.value)}
+                    className="h-7 text-sm flex-1 min-w-0"
+                    placeholder="自定义名称，便于区分"
+                    maxLength={60}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveName()
+                      if (e.key === 'Escape') {
+                        setEditingName(false)
+                        setNameValue(credential.displayName ?? '')
+                      }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0 shrink-0"
+                    onClick={handleSaveName}
+                    disabled={setDisplayName.isPending}
+                  >
+                    ✓
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0 shrink-0"
+                    onClick={() => {
+                      setEditingName(false)
+                      setNameValue(credential.displayName ?? '')
+                    }}
+                  >
+                    ✕
+                  </Button>
+                </div>
+              ) : (
+                <span
+                  className="font-medium cursor-pointer hover:underline truncate"
+                  onClick={() => {
+                    setNameValue(credential.displayName ?? '')
+                    setEditingName(true)
+                  }}
+                  title="点击编辑名称"
+                >
+                  {credential.displayName || '未命名'}
+                  <span className="text-xs text-muted-foreground ml-1">(点击编辑)</span>
                 </span>
               )}
             </div>

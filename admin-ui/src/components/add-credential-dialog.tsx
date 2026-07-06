@@ -24,6 +24,7 @@ const DEFAULT_PROXY_PASSWORD = '3d1it5o1kxnu'
 
 export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogProps) {
   const [refreshToken, setRefreshToken] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [kiroApiKey, setKiroApiKey] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('social')
   const [authRegion, setAuthRegion] = useState('')
@@ -47,6 +48,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
   const resetForm = () => {
     setRefreshToken('')
+    setDisplayName('')
     setKiroApiKey('')
     setAuthMethod('social')
     setAuthRegion('')
@@ -113,6 +115,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     mutate(
       {
         authMethod,
+        displayName: displayName.trim() || undefined,
         refreshToken: isApiKey ? undefined : refreshToken.trim(),
         kiroApiKey: isApiKey ? kiroApiKey.trim() : undefined,
         authRegion: authRegion.trim() || undefined,
@@ -171,6 +174,24 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                 <option value="external_idp">企业 SSO / Microsoft 365</option>
                 <option value="api_key">API Key</option>
               </select>
+            </div>
+
+            {/* 自定义名称 */}
+            <div className="space-y-2">
+              <label htmlFor="displayName" className="text-sm font-medium">
+                名称（可选）
+              </label>
+              <Input
+                id="displayName"
+                placeholder="自定义名称，便于区分凭据"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                disabled={isPending}
+                maxLength={60}
+              />
+              <p className="text-xs text-muted-foreground">
+                仅用于管理界面展示，留空则显示邮箱或凭据编号
+              </p>
             </div>
 
             {/* Kiro API Key (API Key 模式) */}

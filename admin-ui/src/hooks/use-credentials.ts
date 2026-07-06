@@ -4,6 +4,7 @@ import {
   setCredentialDisabled,
   setCredentialPriority,
   setCredentialAllowOverage,
+  setCredentialDisplayName,
   setCredentialRateLimits,
   resetCredentialFailure,
   clearCredentialCooldown,
@@ -56,6 +57,18 @@ export function useSetPriority() {
   return useMutation({
     mutationFn: ({ id, priority }: { id: number; priority: number }) =>
       setCredentialPriority(id, priority),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 设置凭据显示名称
+export function useSetDisplayName() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, displayName }: { id: number; displayName: string | null }) =>
+      setCredentialDisplayName(id, displayName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
     },

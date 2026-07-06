@@ -850,6 +850,9 @@ pub struct CredentialEntrySnapshot {
     pub masked_api_key: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
+    /// 自定义显示名称（Admin UI 展示用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// API 调用成功次数
     pub success_count: u64,
     /// 最后一次 API 调用时间（RFC3339 格式）
@@ -2145,6 +2148,7 @@ impl MultiTokenManager {
                             None
                         },
                         email: e.credentials.email.clone(),
+                        display_name: e.credentials.display_name.clone(),
                         success_count: e.success_count,
                         last_used_at: e.last_used_at.clone(),
                         has_proxy: e.credentials.proxy_url.is_some(),
@@ -2216,6 +2220,25 @@ impl MultiTokenManager {
         // 立即按新优先级重新选择当前凭据（无论持久化是否成功）
         self.select_highest_priority();
         // 持久化更改
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    /// 设置凭据自定义显示名称（Admin API）
+    ///
+    /// 传入空字符串或 None 表示清除显示名称。
+    pub fn set_display_name(&self, id: u64, display_name: Option<String>) -> anyhow::Result<()> {
+        let normalized = display_name
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.credentials.display_name = normalized;
+        }
         self.persist_credentials()?;
         Ok(())
     }
@@ -2934,6 +2957,31 @@ mod tests {
         assert!(id > 0);
         assert_eq!(manager.total_count(), 1);
         assert_eq!(manager.available_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_set_display_name_updates_snapshot() {
+        let config = Config::default();
+        let manager = MultiTokenManager::new(config, vec![], None, None, false).unwrap();
+
+        let mut cred = KiroCredentials::default();
+        cred.kiro_api_key = Some("ksk_display_name_test".to_string());
+        cred.auth_method = Some("api_key".to_string());
+        let id = manager.add_credential(cred).await.unwrap();
+
+        // 设置显示名称
+        manager
+            .set_display_name(id, Some("  生产主号  ".to_string()))
+            .unwrap();
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.display_name.as_deref(), Some("生产主号"));
+
+        // 空字符串清除
+        manager.set_display_name(id, Some("   ".to_string())).unwrap();
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.display_name, None);
     }
 
     #[tokio::test]

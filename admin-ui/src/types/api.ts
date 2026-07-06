@@ -35,6 +35,7 @@ export interface CredentialStatusItem {
   authMethod: string | null
   hasProfileArn: boolean
   email?: string
+  displayName?: string
   refreshTokenHash?: string
   apiKeyHash?: string
   maskedApiKey?: string
@@ -97,6 +98,10 @@ export interface SetAllowOverageRequest {
   allowOverage: boolean
 }
 
+export interface SetDisplayNameRequest {
+  displayName: string | null
+}
+
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
@@ -116,6 +121,7 @@ export interface AddCredentialRequest {
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string
+  displayName?: string
   kiroApiKey?: string
   endpoint?: string
   allowOverage?: boolean
