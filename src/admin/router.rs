@@ -8,10 +8,11 @@ use axum::{
 use super::{
     handlers::{
         add_credential, clear_credential_cooldown, delete_credential, force_refresh_token,
-        get_all_credentials, get_credential_balance, get_load_balancing_mode, get_version_info,
-        reset_all_success_count, reset_failure_count, reset_success_count,
-        set_credential_allow_overage, set_credential_disabled, set_credential_display_name,
-        set_credential_priority, set_credential_rate_limits, set_load_balancing_mode,
+        get_all_credentials, get_credential_balance, get_load_balancing_mode,
+        get_runtime_settings, get_version_info, reset_all_success_count, reset_failure_count,
+        reset_success_count, set_credential_allow_overage, set_credential_disabled,
+        set_credential_display_name, set_credential_priority, set_credential_rate_limits,
+        set_load_balancing_mode, update_runtime_settings,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -33,6 +34,8 @@ use super::{
 /// - `GET /credentials/:id/balance` - 获取凭据余额
 /// - `GET /config/load-balancing` - 获取负载均衡模式
 /// - `PUT /config/load-balancing` - 设置负载均衡模式
+/// - `GET /config/settings` - 获取运行时设置
+/// - `PUT /config/settings` - 更新运行时设置
 ///
 /// # 认证
 /// 需要 Admin API Key 认证，支持：
@@ -72,6 +75,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route(
             "/config/load-balancing",
             get(get_load_balancing_mode).put(set_load_balancing_mode),
+        )
+        .route(
+            "/config/settings",
+            get(get_runtime_settings).put(update_runtime_settings),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),

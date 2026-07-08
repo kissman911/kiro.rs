@@ -96,7 +96,7 @@ fn build_request_body_and_plan(
             .and_then(|m| m.user_id.as_ref().cloned()),
     };
 
-    let request_plan = if state.native_like_two_phase_flow {
+    let request_plan = if state.two_phase_enabled() {
         RequestPlan::two_phase_native_like(identity)
     } else {
         RequestPlan::single_phase(identity)
@@ -460,7 +460,7 @@ pub async fn post_messages(
             stream_mode: StreamMode::Direct,
             tool_name_map,
         };
-        if state.native_like_two_phase_flow {
+        if state.two_phase_enabled() {
             TwoPhaseExecutor::new(provider.clone())
                 .execute_stream(&_request_plan, input)
                 .await
@@ -470,8 +470,8 @@ pub async fn post_messages(
                 .await
         }
     } else {
-        let extract_thinking = state.extract_thinking && parse_thinking;
-        if state.native_like_two_phase_flow {
+        let extract_thinking = state.thinking_extraction_enabled() && parse_thinking;
+        if state.two_phase_enabled() {
             TwoPhaseExecutor::new(provider.clone())
                 .execute_non_stream(
                     &_request_plan,
@@ -1055,7 +1055,7 @@ pub async fn post_messages_cc(
             stream_mode: StreamMode::Buffered,
             tool_name_map,
         };
-        if state.native_like_two_phase_flow {
+        if state.two_phase_enabled() {
             TwoPhaseExecutor::new(provider.clone())
                 .execute_stream(&_request_plan, input)
                 .await
@@ -1065,8 +1065,8 @@ pub async fn post_messages_cc(
                 .await
         }
     } else {
-        let extract_thinking = state.extract_thinking && parse_thinking;
-        if state.native_like_two_phase_flow {
+        let extract_thinking = state.thinking_extraction_enabled() && parse_thinking;
+        if state.two_phase_enabled() {
             TwoPhaseExecutor::new(provider.clone())
                 .execute_non_stream(
                     &_request_plan,

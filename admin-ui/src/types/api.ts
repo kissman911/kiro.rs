@@ -135,3 +135,18 @@ export interface AddCredentialResponse {
   credentialId: number
   email?: string
 }
+
+// 运行时设置响应
+export interface RuntimeSettingsResponse {
+  suspiciousCooldownMinutes: number
+  suspiciousCooldownSeconds: number
+  extractThinking: boolean
+  nativeLikeTwoPhaseFlow: boolean
+}
+
+// 更新运行时设置请求（字段均可选，只更新传入的字段）
+export interface UpdateRuntimeSettingsRequest {
+  suspiciousCooldownMinutes?: number
+  extractThinking?: boolean
+  nativeLikeTwoPhaseFlow?: boolean
+}

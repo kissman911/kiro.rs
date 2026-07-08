@@ -51,6 +51,22 @@ impl AppState {
         self.native_like_two_phase_flow = enabled;
         self
     }
+
+    /// 是否启用双阶段执行（优先读取运行时可改值，否则回退到启动配置）
+    pub fn two_phase_enabled(&self) -> bool {
+        match &self.kiro_provider {
+            Some(p) => p.token_manager().get_native_like_two_phase_flow(),
+            None => self.native_like_two_phase_flow,
+        }
+    }
+
+    /// 是否提取 thinking 块（优先读取运行时可改值，否则回退到启动配置）
+    pub fn thinking_extraction_enabled(&self) -> bool {
+        match &self.kiro_provider {
+            Some(p) => p.token_manager().get_extract_thinking(),
+            None => self.extract_thinking,
+        }
+    }
 }
 
 /// API Key 认证中间件

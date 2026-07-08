@@ -14,11 +14,13 @@ import {
   deleteCredential,
   getLoadBalancingMode,
   setLoadBalancingMode,
+  getRuntimeSettings,
+  updateRuntimeSettings,
   resetSuccessCount,
   resetAllSuccessCount,
   getVersionInfo,
 } from '@/api/credentials'
-import type { AddCredentialRequest, RateLimitRule } from '@/types/api'
+import type { AddCredentialRequest, RateLimitRule, UpdateRuntimeSettingsRequest } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -192,6 +194,25 @@ export function useSetLoadBalancingMode() {
     mutationFn: setLoadBalancingMode,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['loadBalancingMode'] })
+    },
+  })
+}
+
+// 获取运行时设置
+export function useRuntimeSettings() {
+  return useQuery({
+    queryKey: ['runtimeSettings'],
+    queryFn: getRuntimeSettings,
+  })
+}
+
+// 更新运行时设置
+export function useUpdateRuntimeSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (req: UpdateRuntimeSettingsRequest) => updateRuntimeSettings(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['runtimeSettings'] })
     },
   })
 }

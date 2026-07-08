@@ -13,6 +13,8 @@ import type {
   AddCredentialResponse,
   RateLimitRule,
   VersionInfoResponse,
+  RuntimeSettingsResponse,
+  UpdateRuntimeSettingsRequest,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -163,6 +165,20 @@ export async function getLoadBalancingMode(): Promise<{ mode: 'priority' | 'bala
 // 设置负载均衡模式
 export async function setLoadBalancingMode(mode: 'priority' | 'balanced'): Promise<{ mode: 'priority' | 'balanced' }> {
   const { data } = await api.put<{ mode: 'priority' | 'balanced' }>('/config/load-balancing', { mode })
+  return data
+}
+
+// 获取运行时设置
+export async function getRuntimeSettings(): Promise<RuntimeSettingsResponse> {
+  const { data } = await api.get<RuntimeSettingsResponse>('/config/settings')
+  return data
+}
+
+// 更新运行时设置
+export async function updateRuntimeSettings(
+  req: UpdateRuntimeSettingsRequest
+): Promise<RuntimeSettingsResponse> {
+  const { data } = await api.put<RuntimeSettingsResponse>('/config/settings', req)
   return data
 }
 

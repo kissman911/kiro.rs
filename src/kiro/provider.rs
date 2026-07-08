@@ -89,7 +89,7 @@ impl KiroProvider {
     }
 
     fn suspicious_rate_limit_cooldown(&self) -> Duration {
-        let seconds = self.token_manager.config().suspicious_cooldown_seconds;
+        let seconds = self.token_manager.get_suspicious_cooldown_seconds();
         if seconds == 0 {
             DEFAULT_SUSPICIOUS_RATE_LIMIT_COOLDOWN
         } else {

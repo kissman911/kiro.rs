@@ -11,7 +11,7 @@ use super::{
     types::{
         AddCredentialRequest, SetAllowOverageRequest, SetDisabledRequest, SetDisplayNameRequest,
         SetLoadBalancingModeRequest, SetPriorityRequest, SetRateLimitsRequest, SuccessResponse,
-        VersionInfoResponse,
+        UpdateRuntimeSettingsRequest, VersionInfoResponse,
     },
 };
 
@@ -248,6 +248,25 @@ pub async fn set_load_balancing_mode(
     Json(payload): Json<SetLoadBalancingModeRequest>,
 ) -> impl IntoResponse {
     match state.service.set_load_balancing_mode(payload) {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// GET /api/admin/config/settings
+/// 获取运行时设置
+pub async fn get_runtime_settings(State(state): State<AdminState>) -> impl IntoResponse {
+    let response = state.service.get_runtime_settings();
+    Json(response)
+}
+
+/// PUT /api/admin/config/settings
+/// 更新运行时设置
+pub async fn update_runtime_settings(
+    State(state): State<AdminState>,
+    Json(payload): Json<UpdateRuntimeSettingsRequest>,
+) -> impl IntoResponse {
+    match state.service.update_runtime_settings(payload) {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }

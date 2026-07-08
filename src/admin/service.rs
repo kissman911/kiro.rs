@@ -14,7 +14,8 @@ use crate::kiro::token_manager::MultiTokenManager;
 use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
-    CredentialsStatusResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest,
+    CredentialsStatusResponse, LoadBalancingModeResponse, RuntimeSettingsResponse,
+    SetLoadBalancingModeRequest, UpdateRuntimeSettingsRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -366,6 +367,55 @@ impl AdminService {
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
 
         Ok(LoadBalancingModeResponse { mode: req.mode })
+    }
+
+    /// 获取运行时设置
+    pub fn get_runtime_settings(&self) -> RuntimeSettingsResponse {
+        let seconds = self.token_manager.get_suspicious_cooldown_seconds();
+        RuntimeSettingsResponse {
+            suspicious_cooldown_minutes: seconds as f64 / 60.0,
+            suspicious_cooldown_seconds: seconds,
+            extract_thinking: self.token_manager.get_extract_thinking(),
+            native_like_two_phase_flow: self.token_manager.get_native_like_two_phase_flow(),
+        }
+    }
+
+    /// 更新运行时设置（只更新传入的字段）
+    pub fn update_runtime_settings(
+        &self,
+        req: UpdateRuntimeSettingsRequest,
+    ) -> Result<RuntimeSettingsResponse, AdminServiceError> {
+        if let Some(minutes) = req.suspicious_cooldown_minutes {
+            if !minutes.is_finite() || minutes < 0.0 {
+                return Err(AdminServiceError::InvalidCredential(
+                    "suspiciousCooldownMinutes 必须是非负数".to_string(),
+                ));
+            }
+            // 上限 24 小时，防止误输导致凭据长时间不可用
+            if minutes > 24.0 * 60.0 {
+                return Err(AdminServiceError::InvalidCredential(
+                    "suspiciousCooldownMinutes 不能超过 1440（24 小时）".to_string(),
+                ));
+            }
+            let seconds = (minutes * 60.0).round() as u64;
+            self.token_manager
+                .set_suspicious_cooldown_seconds(seconds)
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+
+        if let Some(enabled) = req.extract_thinking {
+            self.token_manager
+                .set_extract_thinking(enabled)
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+
+        if let Some(enabled) = req.native_like_two_phase_flow {
+            self.token_manager
+                .set_native_like_two_phase_flow(enabled)
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+
+        Ok(self.get_runtime_settings())
     }
 
     /// 强制刷新指定凭据的 Token

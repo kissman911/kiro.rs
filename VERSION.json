@@ -1,7 +1,7 @@
 {
-  "version": "2026.7.6-kiss.1",
+  "version": "2026.7.8-kiss.1",
   "channel": "kissapi",
-  "codename": "credential-display-name",
-  "date": "2026-07-06",
-  "summary": "Admin UI 支持为每个凭据设置自定义显示名称，替代难以区分的“凭据+编号”。"
+  "codename": "runtime-settings-ui",
+  "date": "2026-07-08",
+  "summary": "Admin UI 新增运行时设置面板：风控冷却时间（分钟）、thinking 块提取、双阶段执行，均即时生效并写回 config.json。"
 }

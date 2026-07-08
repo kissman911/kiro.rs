@@ -309,6 +309,37 @@ pub struct SetLoadBalancingModeRequest {
     pub mode: String,
 }
 
+// ============ 运行时设置（Settings） ============
+
+/// 运行时设置响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSettingsResponse {
+    /// suspicious activity 429 冷却时长（分钟）
+    pub suspicious_cooldown_minutes: f64,
+    /// 底层冷却秒数（便于前端校验/展示）
+    pub suspicious_cooldown_seconds: u64,
+    /// 是否提取非流式响应的 thinking 块
+    pub extract_thinking: bool,
+    /// 是否启用原生化双阶段执行模式（实验）
+    pub native_like_two_phase_flow: bool,
+}
+
+/// 更新运行时设置请求（字段均可选，只更新传入的字段）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRuntimeSettingsRequest {
+    /// suspicious 冷却时长（分钟）
+    #[serde(default)]
+    pub suspicious_cooldown_minutes: Option<f64>,
+    /// 是否提取 thinking 块
+    #[serde(default)]
+    pub extract_thinking: Option<bool>,
+    /// 是否启用双阶段执行
+    #[serde(default)]
+    pub native_like_two_phase_flow: Option<bool>,
+}
+
 // ============ 通用响应 ============
 
 /// 操作成功响应

@@ -14,7 +14,7 @@ use tokio::sync::Mutex as TokioMutex;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration as StdDuration, Instant, SystemTime};
 
 use crate::http_client::{ProxyConfig, build_client};
@@ -916,6 +916,12 @@ pub struct MultiTokenManager {
     is_multiple_format: bool,
     /// 负载均衡模式（运行时可修改）
     load_balancing_mode: Mutex<String>,
+    /// Kiro suspicious activity 429 冷却秒数（运行时可修改）
+    suspicious_cooldown_seconds: AtomicU64,
+    /// 是否开启非流式响应 thinking 块提取（运行时可修改）
+    extract_thinking: AtomicBool,
+    /// 是否启用原生化双阶段执行模式（运行时可修改）
+    native_like_two_phase_flow: AtomicBool,
     /// 最近一次统计持久化时间（用于 debounce）
     last_stats_save_at: Mutex<Option<Instant>>,
     /// 统计数据是否有未落盘更新
@@ -1041,6 +1047,9 @@ impl MultiTokenManager {
             .unwrap_or(0);
 
         let load_balancing_mode = config.load_balancing_mode.clone();
+        let suspicious_cooldown_seconds = config.suspicious_cooldown_seconds;
+        let extract_thinking = config.extract_thinking;
+        let native_like_two_phase_flow = config.native_like_two_phase_flow;
         let manager = Self {
             config,
             proxy,
@@ -1050,6 +1059,9 @@ impl MultiTokenManager {
             credentials_path,
             is_multiple_format,
             load_balancing_mode: Mutex::new(load_balancing_mode),
+            suspicious_cooldown_seconds: AtomicU64::new(suspicious_cooldown_seconds),
+            extract_thinking: AtomicBool::new(extract_thinking),
+            native_like_two_phase_flow: AtomicBool::new(native_like_two_phase_flow),
             last_stats_save_at: Mutex::new(None),
             stats_dirty: AtomicBool::new(false),
         };
@@ -2802,6 +2814,98 @@ impl MultiTokenManager {
         tracing::info!("负载均衡模式已设置为: {}", mode);
         Ok(())
     }
+
+    /// 获取当前 suspicious activity 429 冷却秒数（运行时值）
+    pub fn get_suspicious_cooldown_seconds(&self) -> u64 {
+        self.suspicious_cooldown_seconds.load(Ordering::Relaxed)
+    }
+
+    /// 设置 suspicious activity 429 冷却秒数（Admin API），持久化到配置文件
+    pub fn set_suspicious_cooldown_seconds(&self, seconds: u64) -> anyhow::Result<()> {
+        let previous = self.get_suspicious_cooldown_seconds();
+        if previous == seconds {
+            return Ok(());
+        }
+        self.suspicious_cooldown_seconds
+            .store(seconds, Ordering::Relaxed);
+        if let Err(err) = self.persist_config_field(|c| c.suspicious_cooldown_seconds = seconds) {
+            self.suspicious_cooldown_seconds
+                .store(previous, Ordering::Relaxed);
+            return Err(err);
+        }
+        tracing::info!("suspicious 冷却秒数已设置为: {}", seconds);
+        Ok(())
+    }
+
+    /// 获取是否提取 thinking 块（运行时值）
+    pub fn get_extract_thinking(&self) -> bool {
+        self.extract_thinking.load(Ordering::Relaxed)
+    }
+
+    /// 设置是否提取 thinking 块（Admin API），持久化到配置文件
+    pub fn set_extract_thinking(&self, enabled: bool) -> anyhow::Result<()> {
+        let previous = self.get_extract_thinking();
+        if previous == enabled {
+            return Ok(());
+        }
+        self.extract_thinking.store(enabled, Ordering::Relaxed);
+        if let Err(err) = self.persist_config_field(|c| c.extract_thinking = enabled) {
+            self.extract_thinking.store(previous, Ordering::Relaxed);
+            return Err(err);
+        }
+        tracing::info!("extractThinking 已设置为: {}", enabled);
+        Ok(())
+    }
+
+    /// 获取是否启用双阶段执行（运行时值）
+    pub fn get_native_like_two_phase_flow(&self) -> bool {
+        self.native_like_two_phase_flow.load(Ordering::Relaxed)
+    }
+
+    /// 设置是否启用双阶段执行（Admin API），持久化到配置文件
+    pub fn set_native_like_two_phase_flow(&self, enabled: bool) -> anyhow::Result<()> {
+        let previous = self.get_native_like_two_phase_flow();
+        if previous == enabled {
+            return Ok(());
+        }
+        self.native_like_two_phase_flow
+            .store(enabled, Ordering::Relaxed);
+        if let Err(err) = self.persist_config_field(|c| c.native_like_two_phase_flow = enabled) {
+            self.native_like_two_phase_flow
+                .store(previous, Ordering::Relaxed);
+            return Err(err);
+        }
+        tracing::info!("nativeLikeTwoPhaseFlow 已设置为: {}", enabled);
+        Ok(())
+    }
+
+    /// 通用配置字段持久化：重新加载配置文件，应用修改闭包后写回。
+    ///
+    /// 重新加载而非直接改内存 config，避免覆盖其他进程/字段的并发修改，
+    /// 与 `persist_load_balancing_mode` 保持一致。
+    fn persist_config_field<F>(&self, apply: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&mut Config),
+    {
+        use anyhow::Context;
+
+        let config_path = match self.config.config_path() {
+            Some(path) => path.to_path_buf(),
+            None => {
+                tracing::warn!("配置文件路径未知，配置修改仅在当前进程生效");
+                return Ok(());
+            }
+        };
+
+        let mut config = Config::load(&config_path)
+            .with_context(|| format!("重新加载配置失败: {}", config_path.display()))?;
+        apply(&mut config);
+        config
+            .save()
+            .with_context(|| format!("持久化配置失败: {}", config_path.display()))?;
+
+        Ok(())
+    }
 }
 
 impl Drop for MultiTokenManager {
@@ -3227,6 +3331,40 @@ mod tests {
         let persisted = Config::load(&config_path).unwrap();
         assert_eq!(persisted.load_balancing_mode, "balanced");
         assert_eq!(manager.get_load_balancing_mode(), "balanced");
+
+        std::fs::remove_file(&config_path).unwrap();
+    }
+
+    #[test]
+    fn test_set_runtime_settings_persist_to_config_file() {
+        let config_path = std::env::temp_dir()
+            .join(format!("kiro-runtime-settings-{}.json", uuid::Uuid::new_v4()));
+        std::fs::write(&config_path, r#"{"suspiciousCooldownSeconds":600}"#).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let manager =
+            MultiTokenManager::new(config, vec![KiroCredentials::default()], None, None, false)
+                .unwrap();
+
+        // 初始值来自配置（extractThinking 默认 true）
+        assert_eq!(manager.get_suspicious_cooldown_seconds(), 600);
+        assert!(manager.get_extract_thinking());
+        assert!(!manager.get_native_like_two_phase_flow());
+
+        manager.set_suspicious_cooldown_seconds(300).unwrap();
+        manager.set_extract_thinking(false).unwrap();
+        manager.set_native_like_two_phase_flow(true).unwrap();
+
+        // 运行时值已更新
+        assert_eq!(manager.get_suspicious_cooldown_seconds(), 300);
+        assert!(!manager.get_extract_thinking());
+        assert!(manager.get_native_like_two_phase_flow());
+
+        // 已持久化到配置文件
+        let persisted = Config::load(&config_path).unwrap();
+        assert_eq!(persisted.suspicious_cooldown_seconds, 300);
+        assert!(!persisted.extract_thinking);
+        assert!(persisted.native_like_two_phase_flow);
 
         std::fs::remove_file(&config_path).unwrap();
     }
