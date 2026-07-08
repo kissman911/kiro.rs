@@ -44,16 +44,24 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     }
   }, [data])
 
+  // 校验冷却输入：空、非数字、负数、超上限都视为非法
+  const trimmedMinutes = cooldownMinutes.trim()
+  const parsedMinutes = Number(trimmedMinutes)
+  const cooldownError =
+    trimmedMinutes === ''
+      ? '请输入冷却时间'
+      : !Number.isFinite(parsedMinutes) || parsedMinutes < 0
+        ? '必须是非负数字'
+        : parsedMinutes > 1440
+          ? '不能超过 1440 分钟（24 小时）'
+          : null
+
   const handleSave = async () => {
-    const minutes = Number(cooldownMinutes)
-    if (!Number.isFinite(minutes) || minutes < 0) {
-      toast.error('冷却时间必须是非负数字（分钟）')
+    if (cooldownError) {
+      toast.error(`冷却时间无效：${cooldownError}`)
       return
     }
-    if (minutes > 1440) {
-      toast.error('冷却时间不能超过 1440 分钟（24 小时）')
-      return
-    }
+    const minutes = parsedMinutes
 
     try {
       await updateSettings({
@@ -100,14 +108,18 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                     step="0.5"
                     value={cooldownMinutes}
                     onChange={(e) => setCooldownMinutes(e.target.value)}
-                    className="w-24 text-right"
+                    className={`w-24 text-right${cooldownError ? ' border-destructive focus-visible:ring-destructive' : ''}`}
                   />
                   <span className="text-sm text-muted-foreground">分钟</span>
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">
-                凭据触发 Kiro 上游 suspicious activity 429 后的冷却时长。设为 0 使用默认 10 分钟。
-              </p>
+              {cooldownError ? (
+                <p className="text-xs text-destructive">{cooldownError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  凭据触发 Kiro 上游 suspicious activity 429 后的冷却时长。设为 0 使用默认 10 分钟。
+                </p>
+              )}
             </div>
 
             {/* thinking 块提取 */}
@@ -141,7 +153,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
             取消
           </Button>
-          <Button onClick={handleSave} disabled={isPending || isLoading}>
+          <Button onClick={handleSave} disabled={isPending || isLoading || !!cooldownError}>
             {isPending ? '保存中...' : '保存'}
           </Button>
         </DialogFooter>
