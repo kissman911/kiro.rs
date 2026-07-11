@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { CredentialStatusItem, BalanceResponse, RateLimitRule } from '@/types/api'
+import type { CredentialStatusItem, BalanceResponse, RateLimitRule, RequestEventItem, RequestEventKind } from '@/types/api'
 import {
   useSetDisabled,
   useSetPriority,
@@ -43,6 +43,54 @@ function formatRateLimits(rules?: RateLimitRule[]): string {
   return rules.map((rule) => `${rule.window}/${rule.maxRequests}`).join('，')
 }
 
+
+function requestEventLabel(kind: RequestEventKind): string {
+  switch (kind) {
+    case 'success': return '请求成功'
+    case 'transientError': return '上游瞬态异常'
+    case 'suspiciousRateLimit': return '账号风控冷却'
+    case 'hardFailure': return '凭据硬失败'
+    case 'quotaExhausted': return '额度耗尽'
+    case 'refreshFailure': return '刷新失败'
+    default: return kind
+  }
+}
+
+function requestEventClass(kind: RequestEventKind): string {
+  switch (kind) {
+    case 'success':
+      return 'bg-emerald-500 hover:bg-emerald-400'
+    case 'transientError':
+      return 'bg-red-500 hover:bg-red-400'
+    case 'suspiciousRateLimit':
+      return 'bg-amber-500 hover:bg-amber-400'
+    case 'hardFailure':
+      return 'bg-rose-700 hover:bg-rose-600'
+    case 'quotaExhausted':
+      return 'bg-purple-600 hover:bg-purple-500'
+    case 'refreshFailure':
+      return 'bg-orange-600 hover:bg-orange-500'
+    default:
+      return 'bg-slate-400 hover:bg-slate-300'
+  }
+}
+
+function formatRequestEventTitle(event: RequestEventItem): string {
+  const parts = [requestEventLabel(event.kind), new Date(event.at).toLocaleString()]
+  if (event.status) parts.push(`HTTP ${event.status}`)
+  if (event.message) parts.push(event.message)
+  return parts.join(' · ')
+}
+
+function summarizeRequestHistory(events: RequestEventItem[]): string {
+  if (!events.length) return '暂无请求记录'
+  const success = events.filter((event) => event.kind === 'success').length
+  const transient = events.filter((event) => event.kind === 'transientError').length
+  const suspicious = events.filter((event) => event.kind === 'suspiciousRateLimit').length
+  const hard = events.filter((event) => event.kind === 'hardFailure' || event.kind === 'refreshFailure').length
+  const quota = events.filter((event) => event.kind === 'quotaExhausted').length
+  return `近 ${events.length} 次：成功 ${success} / 瞬态 ${transient} / 风控 ${suspicious} / 硬失败 ${hard} / 额度 ${quota}`
+}
 
 function formatCooldown(seconds?: number): string {
   if (!seconds || seconds <= 0) return ''
@@ -216,6 +264,9 @@ export function CredentialCard({
   const credentialOwner = credential.email?.trim() || '未识别邮箱'
   const isCoolingDown = Boolean(credential.cooldownRemainingSeconds && credential.cooldownRemainingSeconds > 0)
   const cooldownText = formatCooldown(credential.cooldownRemainingSeconds)
+  const requestHistory = credential.requestHistory ?? []
+  const latestRequestEvent = requestHistory[requestHistory.length - 1]
+  const requestHistorySummary = summarizeRequestHistory(requestHistory)
 
   return (
     <>
@@ -250,6 +301,15 @@ export function CredentialCard({
                   >
                     <Clock3 className="h-3 w-3" />
                     冷却中 {cooldownText}
+                  </Badge>
+                )}
+                {latestRequestEvent && (
+                  <Badge
+                    variant="outline"
+                    className="max-w-full truncate"
+                    title={formatRequestEventTitle(latestRequestEvent)}
+                  >
+                    最近：{requestEventLabel(latestRequestEvent.kind)}
                   </Badge>
                 )}
                 {credential.disabled && credential.disabledReason && (
@@ -287,6 +347,37 @@ export function CredentialCard({
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="rounded-md border bg-muted/20 px-3 py-2 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">最近 100 次请求状态</span>
+              <span className="text-xs text-muted-foreground">{requestHistorySummary}</span>
+            </div>
+            {requestHistory.length > 0 ? (
+              <div
+                className="grid gap-0.5"
+                style={{ gridTemplateColumns: 'repeat(50, minmax(0, 1fr))' }}
+                aria-label="最近请求状态条"
+              >
+                {requestHistory.map((event, index) => (
+                  <span
+                    // eslint-disable-next-line react/no-array-index-key
+                    key={`${event.at}-${index}`}
+                    className={`h-3 min-w-[3px] rounded-sm transition-colors ${requestEventClass(event.kind)}`}
+                    title={formatRequestEventTitle(event)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="h-3 rounded-sm bg-muted" title="暂无请求记录" />
+            )}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+              <span><span className="inline-block h-2 w-2 rounded-sm bg-emerald-500" /> 成功</span>
+              <span><span className="inline-block h-2 w-2 rounded-sm bg-red-500" /> 上游瞬态</span>
+              <span><span className="inline-block h-2 w-2 rounded-sm bg-amber-500" /> 风控冷却</span>
+              <span><span className="inline-block h-2 w-2 rounded-sm bg-rose-700" /> 硬失败</span>
+              <span><span className="inline-block h-2 w-2 rounded-sm bg-purple-600" /> 额度</span>
+            </div>
+          </div>
           {/* 信息网格 */}
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div className="col-span-2 flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">

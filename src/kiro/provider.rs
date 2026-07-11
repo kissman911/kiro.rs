@@ -185,7 +185,8 @@ impl KiroProvider {
         if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
             self.token_manager.report_quota_exhausted(ctx.id);
         } else if matches!(status.as_u16(), 401 | 403) {
-            self.token_manager.report_failure(ctx.id);
+            self.token_manager
+                .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
         }
         anyhow::bail!("MCP 请求失败: {} {}", status, body);
     }
@@ -242,7 +243,11 @@ impl KiroProvider {
                 Err(e) => {
                     last_error = Some(e);
                     // endpoint 解析失败：记为失败，换下一张凭据
-                    self.token_manager.report_failure(ctx.id);
+                    self.token_manager.report_failure(
+                        ctx.id,
+                        None,
+                        Some("endpoint resolve failed"),
+                    );
                     continue;
                 }
             };
@@ -274,6 +279,9 @@ impl KiroProvider {
                         max_retries,
                         e
                     );
+                    let error_message = e.to_string();
+                    self.token_manager
+                        .report_transient_error(ctx.id, None, Some(&error_message));
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
@@ -326,7 +334,9 @@ impl KiroProvider {
                     tracing::warn!("凭据 #{} token 强制刷新失败，计入失败", ctx.id);
                 }
 
-                let has_available = self.token_manager.report_failure(ctx.id);
+                let has_available =
+                    self.token_manager
+                        .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
                 if !has_available {
                     anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
                 }
@@ -343,9 +353,12 @@ impl KiroProvider {
                     status,
                     body
                 );
-                let has_available = self
-                    .token_manager
-                    .report_suspicious_rate_limited(ctx.id, self.suspicious_rate_limit_cooldown());
+                let has_available = self.token_manager.report_suspicious_rate_limited(
+                    ctx.id,
+                    self.suspicious_rate_limit_cooldown(),
+                    Some(status.as_u16()),
+                    Some(&body),
+                );
                 if !has_available {
                     anyhow::bail!(
                         "MCP 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
@@ -367,6 +380,11 @@ impl KiroProvider {
                     body
                 );
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
+                self.token_manager.report_transient_error(
+                    ctx.id,
+                    Some(status.as_u16()),
+                    Some(&body),
+                );
                 if attempt + 1 < max_retries {
                     sleep(Self::retry_delay(attempt)).await;
                 }
@@ -426,8 +444,10 @@ impl KiroProvider {
             let endpoint = match self.endpoint_for(&ctx.credentials) {
                 Ok(e) => e,
                 Err(e) => {
+                    let error_message = e.to_string();
                     last_error = Some(e);
-                    self.token_manager.report_failure(ctx.id);
+                    self.token_manager
+                        .report_failure(ctx.id, None, Some(&error_message));
                     continue;
                 }
             };
@@ -461,6 +481,9 @@ impl KiroProvider {
                     );
                     // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
                     // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
+                    let error_message = e.to_string();
+                    self.token_manager
+                        .report_transient_error(ctx.id, None, Some(&error_message));
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
@@ -540,7 +563,9 @@ impl KiroProvider {
                     tracing::warn!("凭据 #{} token 强制刷新失败，计入失败", ctx.id);
                 }
 
-                let has_available = self.token_manager.report_failure(ctx.id);
+                let has_available =
+                    self.token_manager
+                        .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
                 if !has_available {
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据已用尽）: {} {}",
@@ -568,9 +593,12 @@ impl KiroProvider {
                     status,
                     body
                 );
-                let has_available = self
-                    .token_manager
-                    .report_suspicious_rate_limited(ctx.id, self.suspicious_rate_limit_cooldown());
+                let has_available = self.token_manager.report_suspicious_rate_limited(
+                    ctx.id,
+                    self.suspicious_rate_limit_cooldown(),
+                    Some(status.as_u16()),
+                    Some(&body),
+                );
                 if !has_available {
                     anyhow::bail!(
                         "{} API 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
@@ -604,6 +632,11 @@ impl KiroProvider {
                     status,
                     body
                 ));
+                self.token_manager.report_transient_error(
+                    ctx.id,
+                    Some(status.as_u16()),
+                    Some(&body),
+                );
                 if attempt + 1 < max_retries {
                     sleep(Self::retry_delay(attempt)).await;
                 }
@@ -692,14 +725,24 @@ impl KiroProvider {
                 status,
                 body
             );
-            self.token_manager
-                .report_suspicious_rate_limited(ctx.id, self.suspicious_rate_limit_cooldown());
+            self.token_manager.report_suspicious_rate_limited(
+                ctx.id,
+                self.suspicious_rate_limit_cooldown(),
+                Some(status.as_u16()),
+                Some(&body),
+            );
             anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
         }
 
         if matches!(status.as_u16(), 401 | 403) {
-            self.token_manager.report_failure(ctx.id);
+            self.token_manager
+                .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
             anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        }
+
+        if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
+            self.token_manager
+                .report_transient_error(ctx.id, Some(status.as_u16()), Some(&body));
         }
 
         anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);

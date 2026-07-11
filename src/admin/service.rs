@@ -93,6 +93,7 @@ impl AdminService {
                 rate_limits: entry.rate_limits,
                 cooldown_until: entry.cooldown_until,
                 cooldown_remaining_seconds: entry.cooldown_remaining_seconds,
+                request_history: entry.request_history,
             })
             .collect();
 

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::kiro::token_manager::RequestEventSnapshot;
 use crate::model::rate_limit::RateLimitRule;
 
 // ============ 版本信息 ============
@@ -97,6 +98,8 @@ pub struct CredentialStatusItem {
     /// 运行时冷却剩余秒数（仅内存状态）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cooldown_remaining_seconds: Option<u64>,
+    /// 最近 100 次请求事件（旧 -> 新）
+    pub request_history: Vec<RequestEventSnapshot>,
 }
 
 // ============ 操作请求 ============

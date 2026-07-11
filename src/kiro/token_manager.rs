@@ -783,6 +783,8 @@ struct CredentialEntry {
     cooldown_until: Option<Instant>,
     /// 上游账号级临时风控冷却截止墙钟时间（仅内存，用于 Admin API 展示）
     cooldown_until_wall: Option<DateTime<Utc>>,
+    /// 最近请求事件环形记录（仅内存，用于 Admin UI 状态条）
+    request_history: VecDeque<RequestEventSnapshot>,
 }
 
 #[derive(Default)]
@@ -794,6 +796,33 @@ struct CredentialRateLimitState {
 enum RateLimitAvailability {
     Ready,
     LimitedUntil(Instant),
+}
+
+const REQUEST_HISTORY_LIMIT: usize = 100;
+const ERROR_SNIPPET_MAX_CHARS: usize = 180;
+
+/// 单次请求结果类型（用于 Admin UI 最近 100 次请求状态条）
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RequestEventKind {
+    Success,
+    TransientError,
+    SuspiciousRateLimit,
+    HardFailure,
+    QuotaExhausted,
+    RefreshFailure,
+}
+
+/// 单次请求事件快照
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestEventSnapshot {
+    pub kind: RequestEventKind,
+    pub at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// 禁用原因
@@ -881,6 +910,8 @@ pub struct CredentialEntrySnapshot {
     /// 运行时冷却剩余秒数（仅内存状态）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cooldown_remaining_seconds: Option<u64>,
+    /// 最近 100 次请求事件（旧 -> 新）
+    pub request_history: Vec<RequestEventSnapshot>,
 }
 
 /// 凭据管理器状态快照
@@ -1002,6 +1033,7 @@ impl MultiTokenManager {
                     rate_limit_state: CredentialRateLimitState::default(),
                     cooldown_until: None,
                     cooldown_until_wall: None,
+                    request_history: VecDeque::with_capacity(REQUEST_HISTORY_LIMIT),
                 }
             })
             .collect();
@@ -1748,6 +1780,38 @@ impl MultiTokenManager {
         }
     }
 
+    fn truncate_error_message(message: Option<&str>) -> Option<String> {
+        let message = message?.trim();
+        if message.is_empty() {
+            return None;
+        }
+        let mut out = String::new();
+        for ch in message.chars().take(ERROR_SNIPPET_MAX_CHARS) {
+            out.push(ch);
+        }
+        if message.chars().count() > ERROR_SNIPPET_MAX_CHARS {
+            out.push('…');
+        }
+        Some(out)
+    }
+
+    fn push_request_event(
+        entry: &mut CredentialEntry,
+        kind: RequestEventKind,
+        status: Option<u16>,
+        message: Option<&str>,
+    ) {
+        if entry.request_history.len() >= REQUEST_HISTORY_LIMIT {
+            entry.request_history.pop_front();
+        }
+        entry.request_history.push_back(RequestEventSnapshot {
+            kind,
+            at: Utc::now().to_rfc3339(),
+            status,
+            message: Self::truncate_error_message(message),
+        });
+    }
+
     /// 报告指定凭据 API 调用成功
     ///
     /// 重置该凭据的失败计数
@@ -1762,6 +1826,7 @@ impl MultiTokenManager {
                 entry.refresh_failure_count = 0;
                 entry.success_count += 1;
                 entry.last_used_at = Some(Utc::now().to_rfc3339());
+                Self::push_request_event(entry, RequestEventKind::Success, None, None);
                 tracing::debug!(
                     "凭据 #{} API 调用成功（累计 {} 次）",
                     id,
@@ -1779,7 +1844,7 @@ impl MultiTokenManager {
     ///
     /// # Arguments
     /// * `id` - 凭据 ID（来自 CallContext）
-    pub fn report_failure(&self, id: u64) -> bool {
+    pub fn report_failure(&self, id: u64, status: Option<u16>, message: Option<&str>) -> bool {
         let result = {
             let mut entries = self.entries.lock();
             let mut current_id = self.current_id.lock();
@@ -1795,6 +1860,7 @@ impl MultiTokenManager {
 
             entry.failure_count += 1;
             entry.last_used_at = Some(Utc::now().to_rfc3339());
+            Self::push_request_event(entry, RequestEventKind::HardFailure, status, message);
             let failure_count = entry.failure_count;
 
             tracing::warn!(
@@ -1862,6 +1928,12 @@ impl MultiTokenManager {
             entry.disabled = true;
             entry.disabled_reason = Some(DisabledReason::QuotaExceeded);
             entry.last_used_at = Some(Utc::now().to_rfc3339());
+            Self::push_request_event(
+                entry,
+                RequestEventKind::QuotaExhausted,
+                Some(402),
+                Some("quota exhausted"),
+            );
             // 设为阈值，便于在管理面板中直观看到该凭据已不可用
             entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
 
@@ -1893,7 +1965,13 @@ impl MultiTokenManager {
     ///
     /// 这类 429 不是普通 high traffic 瞬态错误。继续打同一账号会扩大风控，
     /// 因此只做运行时冷却/熔断，不写回 disabled 到 credentials.json。
-    pub fn report_suspicious_rate_limited(&self, id: u64, cooldown: StdDuration) -> bool {
+    pub fn report_suspicious_rate_limited(
+        &self,
+        id: u64,
+        cooldown: StdDuration,
+        status: Option<u16>,
+        message: Option<&str>,
+    ) -> bool {
         let result = {
             let mut entries = self.entries.lock();
             let mut current_id = self.current_id.lock();
@@ -1920,6 +1998,12 @@ impl MultiTokenManager {
             entry.cooldown_until = Some(until);
             entry.cooldown_until_wall = Some(until_wall);
             entry.last_used_at = Some(Utc::now().to_rfc3339());
+            Self::push_request_event(
+                entry,
+                RequestEventKind::SuspiciousRateLimit,
+                status,
+                message,
+            );
             // 不累计普通失败次数，避免和 401/403/配置错误混淆；这是运行时风控冷却。
 
             tracing::warn!(
@@ -1949,6 +2033,20 @@ impl MultiTokenManager {
         result
     }
 
+    /// 报告指定凭据遇到上游瞬态错误（429 overloaded / 408 / 5xx / 网络抖动）。
+    ///
+    /// 这类事件只进入最近请求状态条，不累计硬失败，不触发禁用。
+    pub fn report_transient_error(&self, id: u64, status: Option<u16>, message: Option<&str>) {
+        {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                entry.last_used_at = Some(Utc::now().to_rfc3339());
+                Self::push_request_event(entry, RequestEventKind::TransientError, status, message);
+            }
+        }
+        self.save_stats_debounced();
+    }
+
     /// 报告指定凭据刷新 Token 失败。
     ///
     /// 连续刷新失败达到阈值后禁用凭据并切换，阈值内保持当前凭据不切换，
@@ -1969,6 +2067,12 @@ impl MultiTokenManager {
 
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             entry.refresh_failure_count += 1;
+            Self::push_request_event(
+                entry,
+                RequestEventKind::RefreshFailure,
+                None,
+                Some("token refresh failed"),
+            );
             let refresh_failure_count = entry.refresh_failure_count;
 
             tracing::warn!(
@@ -2182,6 +2286,7 @@ impl MultiTokenManager {
                         rate_limits: e.credentials.rate_limits.clone(),
                         cooldown_until,
                         cooldown_remaining_seconds,
+                        request_history: e.request_history.iter().cloned().collect(),
                     }
                 })
                 .collect(),
@@ -2651,6 +2756,7 @@ impl MultiTokenManager {
                 rate_limit_state: CredentialRateLimitState::default(),
                 cooldown_until: None,
                 cooldown_until_wall: None,
+                request_history: VecDeque::with_capacity(REQUEST_HISTORY_LIMIT),
             });
         }
 
@@ -3082,7 +3188,9 @@ mod tests {
         assert_eq!(entry.display_name.as_deref(), Some("生产主号"));
 
         // 空字符串清除
-        manager.set_display_name(id, Some("   ".to_string())).unwrap();
+        manager
+            .set_display_name(id, Some("   ".to_string()))
+            .unwrap();
         let snapshot = manager.snapshot();
         let entry = snapshot.entries.iter().find(|e| e.id == id).unwrap();
         assert_eq!(entry.display_name, None);
@@ -3260,18 +3368,18 @@ mod tests {
 
         // 凭据会自动分配 ID（从 1 开始）
         // 前两次失败不会禁用（使用 ID 1）
-        assert!(manager.report_failure(1));
-        assert!(manager.report_failure(1));
+        assert!(manager.report_failure(1, None, None));
+        assert!(manager.report_failure(1, None, None));
         assert_eq!(manager.available_count(), 2);
 
         // 第三次失败会禁用第一个凭据
-        assert!(manager.report_failure(1));
+        assert!(manager.report_failure(1, None, None));
         assert_eq!(manager.available_count(), 1);
 
         // 继续失败第二个凭据（使用 ID 2）
-        assert!(manager.report_failure(2));
-        assert!(manager.report_failure(2));
-        assert!(!manager.report_failure(2)); // 所有凭据都禁用了
+        assert!(manager.report_failure(2, None, None));
+        assert!(manager.report_failure(2, None, None));
+        assert!(!manager.report_failure(2, None, None)); // 所有凭据都禁用了
         assert_eq!(manager.available_count(), 0);
     }
 
@@ -3283,16 +3391,57 @@ mod tests {
         let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
 
         // 失败两次（使用 ID 1）
-        manager.report_failure(1);
-        manager.report_failure(1);
+        manager.report_failure(1, None, None);
+        manager.report_failure(1, None, None);
 
         // 成功后重置计数（使用 ID 1）
         manager.report_success(1);
 
         // 再失败两次不会禁用
-        manager.report_failure(1);
-        manager.report_failure(1);
+        manager.report_failure(1, None, None);
+        manager.report_failure(1, None, None);
         assert_eq!(manager.available_count(), 1);
+    }
+
+    #[test]
+    fn test_request_history_records_recent_events_and_caps_at_100() {
+        let config = Config::default();
+        let cred = KiroCredentials::default();
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        manager.report_success(1);
+        manager.report_transient_error(1, Some(429), Some("AI service temporarily overloaded"));
+        assert!(!manager.report_suspicious_rate_limited(
+            1,
+            StdDuration::from_secs(60),
+            Some(429),
+            Some("Due to suspicious activity temporary limits can send a request to Kiro"),
+        ));
+
+        let snapshot = manager.snapshot();
+        let history = &snapshot.entries[0].request_history;
+        assert_eq!(history.len(), 3);
+        assert!(matches!(history[0].kind, RequestEventKind::Success));
+        assert!(matches!(history[1].kind, RequestEventKind::TransientError));
+        assert_eq!(history[1].status, Some(429));
+        assert!(
+            history[1]
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("overloaded")
+        );
+        assert!(matches!(
+            history[2].kind,
+            RequestEventKind::SuspiciousRateLimit
+        ));
+
+        for _ in 0..120 {
+            manager.report_success(1);
+        }
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.entries[0].request_history.len(), 100);
     }
 
     #[test]
@@ -3337,8 +3486,10 @@ mod tests {
 
     #[test]
     fn test_set_runtime_settings_persist_to_config_file() {
-        let config_path = std::env::temp_dir()
-            .join(format!("kiro-runtime-settings-{}.json", uuid::Uuid::new_v4()));
+        let config_path = std::env::temp_dir().join(format!(
+            "kiro-runtime-settings-{}.json",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::write(&config_path, r#"{"suspiciousCooldownSeconds":600}"#).unwrap();
 
         let config = Config::load(&config_path).unwrap();
@@ -3384,10 +3535,10 @@ mod tests {
 
         // 凭据会自动分配 ID（从 1 开始）
         for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
-            manager.report_failure(1);
+            manager.report_failure(1, None, None);
         }
         for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
-            manager.report_failure(2);
+            manager.report_failure(2, None, None);
         }
 
         assert_eq!(manager.available_count(), 0);
@@ -3711,7 +3862,12 @@ mod suspicious_cooldown_tests {
             .expect("manager should initialize");
 
         assert_eq!(manager.available_count(), 2);
-        assert!(manager.report_suspicious_rate_limited(1, StdDuration::from_secs(60)));
+        assert!(manager.report_suspicious_rate_limited(
+            1,
+            StdDuration::from_secs(60),
+            Some(429),
+            Some("Due to suspicious activity temporary limits can send a request to Kiro")
+        ));
         assert_eq!(manager.available_count(), 1);
 
         let entries = manager.entries.lock();
@@ -3732,7 +3888,12 @@ mod suspicious_cooldown_tests {
         let manager = MultiTokenManager::new(config, vec![cred], None, None, false)
             .expect("manager should initialize");
 
-        assert!(!manager.report_suspicious_rate_limited(1, StdDuration::from_secs(60)));
+        assert!(!manager.report_suspicious_rate_limited(
+            1,
+            StdDuration::from_secs(60),
+            Some(429),
+            Some("Due to suspicious activity temporary limits can send a request to Kiro")
+        ));
         assert_eq!(manager.available_count(), 0);
 
         manager.clear_cooldown(1).expect("cooldown should clear");
@@ -3753,7 +3914,12 @@ mod suspicious_cooldown_tests {
         let manager = MultiTokenManager::new(config, vec![cred], None, None, false)
             .expect("manager should initialize");
 
-        assert!(!manager.report_suspicious_rate_limited(1, StdDuration::from_secs(60)));
+        assert!(!manager.report_suspicious_rate_limited(
+            1,
+            StdDuration::from_secs(60),
+            Some(429),
+            Some("Due to suspicious activity temporary limits can send a request to Kiro")
+        ));
         assert_eq!(manager.available_count(), 0);
     }
 }

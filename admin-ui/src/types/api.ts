@@ -24,6 +24,21 @@ export interface RateLimitRule {
   maxRequests: number
 }
 
+export type RequestEventKind =
+  | 'success'
+  | 'transientError'
+  | 'suspiciousRateLimit'
+  | 'hardFailure'
+  | 'quotaExhausted'
+  | 'refreshFailure'
+
+export interface RequestEventItem {
+  kind: RequestEventKind
+  at: string
+  status?: number
+  message?: string
+}
+
 // 单个凭据状态
 export interface CredentialStatusItem {
   id: number
@@ -50,6 +65,7 @@ export interface CredentialStatusItem {
   rateLimits?: RateLimitRule[]
   cooldownUntil?: string
   cooldownRemainingSeconds?: number
+  requestHistory: RequestEventItem[]
 }
 
 // 余额响应
