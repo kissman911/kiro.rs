@@ -158,18 +158,22 @@ pub fn map_model(model: &str) -> Option<String> {
 /// 复用 `map_model` 的映射逻辑，确保窗口大小判断与模型映射一致。
 /// Kiro 于 2026-03-24 将 Opus 4.6、Opus 4.7、Opus 4.8 和 Sonnet 4.6 升级至 1M 上下文。
 /// Claude Sonnet 5 同样使用 1M 上下文。
-/// GPT-5.6 三档（Sol/Terra/Luna）均为约 1M 上下文（128K 最大输出）。
+/// GPT-5.6 三档（Sol/Terra/Luna）上游实测 maxInputTokens 为 272k。
 pub fn get_context_window_size(model: &str) -> i32 {
     match map_model(model) {
+        Some(mapped)
+            if mapped == "gpt-5.6-sol"
+                || mapped == "gpt-5.6-terra"
+                || mapped == "gpt-5.6-luna" =>
+        {
+            272_000
+        }
         Some(mapped)
             if mapped == "claude-sonnet-5"
                 || mapped == "claude-sonnet-4.6"
                 || mapped == "claude-opus-4.6"
                 || mapped == "claude-opus-4.7"
-                || mapped == "claude-opus-4.8"
-                || mapped == "gpt-5.6-sol"
-                || mapped == "gpt-5.6-terra"
-                || mapped == "gpt-5.6-luna" =>
+                || mapped == "claude-opus-4.8" =>
         {
             1_000_000
         }
@@ -1508,10 +1512,10 @@ mod tests {
         assert_eq!(map_model("gpt-5-6-sol"), Some("gpt-5.6-sol".to_string()));
         assert_eq!(map_model("gpt-5.6-terra"), Some("gpt-5.6-terra".to_string()));
         assert_eq!(map_model("gpt-5.6-luna"), Some("gpt-5.6-luna".to_string()));
-        // 默认别名路由到 sol
-        assert_eq!(get_context_window_size("gpt-5.6-sol"), 1_000_000);
-        assert_eq!(get_context_window_size("gpt-5.6-terra"), 1_000_000);
-        assert_eq!(get_context_window_size("gpt-5.6-luna"), 1_000_000);
+        // 默认别名路由到 sol；上下文窗口 272k
+        assert_eq!(get_context_window_size("gpt-5.6-sol"), 272_000);
+        assert_eq!(get_context_window_size("gpt-5.6-terra"), 272_000);
+        assert_eq!(get_context_window_size("gpt-5.6-luna"), 272_000);
     }
 
     #[test]
