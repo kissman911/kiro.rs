@@ -109,21 +109,17 @@ Complete all chunked operations without commentary.";
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
 
-    if model_lower.contains("gpt")
-        && (model_lower.contains("5.6")
-            || model_lower.contains("5-6")
-            || model_lower.contains("sol")
-            || model_lower.contains("terra")
-            || model_lower.contains("luna"))
-    {
-        // GPT-5.6 三档：sol（旗舰）/ terra（均衡）/ luna（低成本）
-        // 未带档位后缀的 gpt-5.6 别名默认路由到 sol（对齐 OpenAI 官方行为）
-        if model_lower.contains("terra") {
-            Some("gpt-5.6-terra".to_string())
-        } else if model_lower.contains("luna") {
-            Some("gpt-5.6-luna".to_string())
-        } else {
-            Some("gpt-5.6-sol".to_string())
+    if model_lower.contains("gpt") {
+        // GPT-5.6 三档采用白名单精确匹配，避免把 gpt-4-terra、gpt-6-sol
+        // 或拼错的模型名静默路由到 GPT-5.6。
+        match model_lower.as_str() {
+            // 未带档位后缀的 gpt-5.6 别名默认路由到 sol（对齐 OpenAI 官方行为）
+            "gpt-5.6" | "gpt-5-6" | "gpt-5.6-sol" | "gpt-5-6-sol" => {
+                Some("gpt-5.6-sol".to_string())
+            }
+            "gpt-5.6-terra" | "gpt-5-6-terra" => Some("gpt-5.6-terra".to_string()),
+            "gpt-5.6-luna" | "gpt-5-6-luna" => Some("gpt-5.6-luna".to_string()),
+            _ => None,
         }
     } else if model_lower.contains("sonnet") {
         if model_lower.contains("sonnet-5")
@@ -158,13 +154,12 @@ pub fn map_model(model: &str) -> Option<String> {
 /// 复用 `map_model` 的映射逻辑，确保窗口大小判断与模型映射一致。
 /// Kiro 于 2026-03-24 将 Opus 4.6、Opus 4.7、Opus 4.8 和 Sonnet 4.6 升级至 1M 上下文。
 /// Claude Sonnet 5 同样使用 1M 上下文。
-/// GPT-5.6 三档（Sol/Terra/Luna）上游实测 maxInputTokens 为 272k。
+/// GPT-5.6 三档在 Kiro ListAvailableModels 中的 maxInputTokens 为 272k；
+/// 这是 Kiro 适配层用于 contextUsage 百分比换算的窗口，不等同于 OpenAI 官方 1.05M 全窗口。
 pub fn get_context_window_size(model: &str) -> i32 {
     match map_model(model) {
         Some(mapped)
-            if mapped == "gpt-5.6-sol"
-                || mapped == "gpt-5.6-terra"
-                || mapped == "gpt-5.6-luna" =>
+            if mapped == "gpt-5.6-sol" || mapped == "gpt-5.6-terra" || mapped == "gpt-5.6-luna" =>
         {
             272_000
         }
@@ -1501,8 +1496,12 @@ mod tests {
 
     #[test]
     fn test_map_model_unsupported() {
+        assert!(map_model("gpt").is_none());
         assert!(map_model("gpt-4").is_none());
         assert!(map_model("gpt-5").is_none());
+        assert!(map_model("gpt-4-terra").is_none());
+        assert!(map_model("gpt-6-sol").is_none());
+        assert!(map_model("gpt-5.6-unknown").is_none());
     }
 
     #[test]
@@ -1510,9 +1509,12 @@ mod tests {
         assert_eq!(map_model("gpt-5.6"), Some("gpt-5.6-sol".to_string()));
         assert_eq!(map_model("gpt-5.6-sol"), Some("gpt-5.6-sol".to_string()));
         assert_eq!(map_model("gpt-5-6-sol"), Some("gpt-5.6-sol".to_string()));
-        assert_eq!(map_model("gpt-5.6-terra"), Some("gpt-5.6-terra".to_string()));
-        assert_eq!(map_model("gpt-5.6-luna"), Some("gpt-5.6-luna".to_string()));
-        // 默认别名路由到 sol；上下文窗口 272k
+        assert_eq!(
+            map_model("gpt-5.6-terra"),
+            Some("gpt-5.6-terra".to_string())
+        );
+        assert_eq!(map_model("GPT-5.6-LUNA"), Some("gpt-5.6-luna".to_string()));
+        // 默认别名路由到 sol；Kiro contextUsage 换算窗口为 272k。
         assert_eq!(get_context_window_size("gpt-5.6-sol"), 272_000);
         assert_eq!(get_context_window_size("gpt-5.6-terra"), 272_000);
         assert_eq!(get_context_window_size("gpt-5.6-luna"), 272_000);
