@@ -7,8 +7,8 @@
 <table>
 <tr>
 <td>
-<b>特别感谢</b>：<a href="https://co.yes.vg/register?ref=hank9999">YesCode</a> 为本项目提供了 AI API 额度赞助, YesCode 作为一家低调务实的 AI API 中转服务商 <br>
-长期以来提供稳定高可用的服务, 如您有意体验, 请点击链接注册体验 → <a href="https://co.yes.vg/register?ref=hank9999">立即访问</a>
+<b>推荐</b>：<a href="https://kissapi.ai">KissAPI</a> 一站式 AI API 中转服务，支持 Claude、GPT、Gemini 等主流模型，OpenAI 兼容端点，稳定高可用。<br>
+如您有意体验, 请点击链接注册体验 → <a href="https://kissapi.ai">立即访问</a>
 </td>
 </tr>
 </table>
