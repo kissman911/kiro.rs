@@ -1,7 +1,7 @@
 {
-  "version": "2026.7.8-kiss.1",
+  "version": "2026.7.15-kiss.1",
   "channel": "kissapi",
-  "codename": "runtime-settings-ui",
-  "date": "2026-07-08",
-  "summary": "Admin UI 新增运行时设置面板：风控冷却时间（分钟）、thinking 块提取、双阶段执行，均即时生效并写回 config.json。"
+  "codename": "cli-endpoint",
+  "date": "2026-07-15",
+  "summary": "新增 Kiro CLI 端点：AWS JSON 1.0 请求、CLI headers、KIRO_CLI origin、ExternalIdp/API Key TokenType 与凭据级 profileArn。"
 }
