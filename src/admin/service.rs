@@ -245,8 +245,13 @@ impl AdminService {
 
         // 代理池分配：仅当凭据未手填 proxy_url 时才介入
         // 手动指定 proxy_id > 自动分配（受 use_pool / 池默认开关控制）
+        //
+        // 采用 reservation 两阶段：先原子预占（占位，不落盘、计入负载防止并发选中同一代理），
+        // 凭据创建成功后 commit 转真实 credId 并落盘；任一步失败则 cancel 回滚，避免幽灵占用。
         let mut req = req;
-        let mut assigned_proxy_id: Option<u64> = None;
+        // 预占句柄：(proxy_id, token)，成功后 commit，失败/提前返回时 cancel
+        let mut reservation_token: Option<u64> = None;
+        let mut reserved_proxy_id: Option<u64> = None;
         let manual_proxy_url_present = req
             .proxy_url
             .as_deref()
@@ -255,72 +260,105 @@ impl AdminService {
         if !manual_proxy_url_present {
             let pool = &self.proxy_pool;
             let allow_reuse = req.proxy_allow_reuse.unwrap_or(false);
-            let want_auto = req.use_pool.unwrap_or_else(|| pool.is_auto_assign_enabled());
+            let allow_probe_failure = req.proxy_allow_probe_failure.unwrap_or(false);
+            let want_auto = req
+                .use_pool
+                .unwrap_or_else(|| pool.is_auto_assign_enabled());
             if let Some(pid) = req.proxy_id {
-                // 手动指定：分配前探测，不通仅告警不阻断（用户明确指定了该 IP）
-                if let Some(entry) = pool.get(pid) {
-                    let probe = pool.probe(&entry).await;
-                    pool.record_probe(pid, probe.clone());
-                    if !probe.ok {
-                        tracing::warn!(
-                            "手动指定代理 #{} 探测失败({})，仍按用户意愿分配",
-                            pid,
-                            probe.message.as_deref().unwrap_or("未知")
-                        );
-                    }
+                // 手动指定：先预占（占位），再探测。默认探测失败拒绝创建，除非显式允许。
+                let reservation = pool.reserve_manual(pid, allow_reuse).map_err(|e| {
+                    AdminServiceError::InvalidCredential(format!("指定代理分配失败: {}", e))
+                })?;
+                let probe = pool.probe(&reservation.proxy).await;
+                pool.record_probe(pid, probe.clone());
+                if !probe.ok && !allow_probe_failure {
+                    pool.cancel_reservation(reservation.token);
+                    return Err(AdminServiceError::InvalidCredential(format!(
+                        "指定代理 #{} 探测失败（{}），已拒绝创建。如确认可用可强制允许后重试",
+                        pid,
+                        probe.message.as_deref().unwrap_or("未知")
+                    )));
                 }
-                match pool.assign(pid, None, allow_reuse) {
-                    Ok(r) => {
-                        req.proxy_url = Some(r.proxy.url.clone());
-                        req.proxy_username = r.proxy.username.clone();
-                        req.proxy_password = r.proxy.password.clone();
-                        assigned_proxy_id = Some(r.proxy.id);
-                        tracing::info!(
-                            "手动指定代理 #{} ({}){} 分配给新凭据",
-                            r.proxy.id,
-                            if r.proxy.label.is_empty() { &r.proxy.url } else { &r.proxy.label },
-                            if r.reused { " ♻️复用在用IP" } else { "" }
-                        );
-                    }
-                    Err(e) => {
-                        return Err(AdminServiceError::InvalidCredential(format!(
-                            "指定代理分配失败: {}",
-                            e
-                        )));
-                    }
+                if !probe.ok {
+                    tracing::warn!(
+                        "手动指定代理 #{} 探测失败({})，用户强制分配",
+                        pid,
+                        probe.message.as_deref().unwrap_or("未知")
+                    );
                 }
+                req.proxy_url = Some(reservation.proxy.url.clone());
+                req.proxy_username = reservation.proxy.username.clone();
+                req.proxy_password = reservation.proxy.password.clone();
+                reservation_token = Some(reservation.token);
+                reserved_proxy_id = Some(reservation.proxy.id);
+                tracing::info!(
+                    "手动指定代理 #{} ({}){} 预占给新凭据",
+                    reservation.proxy.id,
+                    if reservation.proxy.label.is_empty() {
+                        &reservation.proxy.url
+                    } else {
+                        &reservation.proxy.label
+                    },
+                    if reservation.reused {
+                        " ♻️复用在用IP"
+                    } else {
+                        ""
+                    }
+                );
             } else if want_auto {
-                // 自动分配：优先空闲，逐个探测，跳过不通的；无空闲时复用在用 IP
+                // 自动分配：优先空闲，逐个预占并探测（带 TTL 缓存，避免反复探测坏代理），
+                // 跳过不通的；无空闲时复用在用 IP。
                 let mut skip: Vec<u64> = Vec::new();
                 loop {
-                    match pool.auto_assign(None, &skip) {
-                        Some(r) => {
-                            let probe = pool.probe(&r.proxy).await;
-                            pool.record_probe(r.proxy.id, probe.clone());
+                    match pool.reserve_auto(&skip) {
+                        Some(reservation) => {
+                            let pid = reservation.proxy.id;
+                            // 使用 TTL 缓存的探测：新预占的代理若近期探测过（成功/失败）直接复用结果
+                            let probe = match pool.probe_or_cached(pid).await {
+                                Some(r) => r,
+                                None => {
+                                    // 代理在探测前消失（并发删除），取消预占并跳过
+                                    pool.cancel_reservation(reservation.token);
+                                    skip.push(pid);
+                                    continue;
+                                }
+                            };
                             if probe.ok {
-                                req.proxy_url = Some(r.proxy.url.clone());
-                                req.proxy_username = r.proxy.username.clone();
-                                req.proxy_password = r.proxy.password.clone();
-                                assigned_proxy_id = Some(r.proxy.id);
+                                req.proxy_url = Some(reservation.proxy.url.clone());
+                                req.proxy_username = reservation.proxy.username.clone();
+                                req.proxy_password = reservation.proxy.password.clone();
+                                reservation_token = Some(reservation.token);
+                                reserved_proxy_id = Some(pid);
                                 tracing::info!(
-                                    "自动分配代理 #{} ({}){} 给新凭据",
-                                    r.proxy.id,
-                                    if r.proxy.label.is_empty() { &r.proxy.url } else { &r.proxy.label },
-                                    if r.reused { " ♻️复用在用IP" } else { "" }
+                                    "自动分配代理 #{} ({}){} 预占给新凭据",
+                                    pid,
+                                    if reservation.proxy.label.is_empty() {
+                                        &reservation.proxy.url
+                                    } else {
+                                        &reservation.proxy.label
+                                    },
+                                    if reservation.reused {
+                                        " ♻️复用在用IP"
+                                    } else {
+                                        ""
+                                    }
                                 );
                                 break;
                             } else {
-                                // 探测失败：未记录分配（cred_id=None），直接跳过该代理重试
+                                // 探测失败：取消预占并跳过该代理重试
+                                pool.cancel_reservation(reservation.token);
                                 tracing::warn!(
                                     "代理 #{} 探测失败({})，跳过",
-                                    r.proxy.id,
+                                    pid,
                                     probe.message.as_deref().unwrap_or("未知")
                                 );
-                                skip.push(r.proxy.id);
+                                skip.push(pid);
                             }
                         }
                         None => {
-                            tracing::warn!("代理池无可用 IP（全部探测失败或池为空），新凭据不分配代理");
+                            tracing::warn!(
+                                "代理池无可用 IP（全部探测失败或池为空），新凭据不分配代理"
+                            );
                             break;
                         }
                     }
@@ -362,16 +400,30 @@ impl AdminService {
         };
 
         // 调用 token_manager 添加凭据
-        let credential_id = self
-            .token_manager
-            .add_credential(new_cred)
-            .await
-            .map_err(|e| self.classify_add_error(e))?;
+        let credential_id = match self.token_manager.add_credential(new_cred).await {
+            Ok(id) => id,
+            Err(e) => {
+                // 凭据创建失败：回滚代理预占，避免幽灵占用
+                if let Some(token) = reservation_token {
+                    self.proxy_pool.cancel_reservation(token);
+                    tracing::info!("凭据创建失败，已回滚代理 #{:?} 预占", reserved_proxy_id);
+                }
+                return Err(self.classify_add_error(e));
+            }
+        };
 
-        // 回填代理池分配记录（用真实 credId）。
-        // 分配阶段以 cred_id=None 试排，不预占；添加成功后才正式记录，避免失败时假性占用。
-        if let Some(pid) = assigned_proxy_id {
-            self.proxy_pool.record_assignment(pid, credential_id);
+        // 提交代理预占（用真实 credId）。
+        // 分配阶段先预占占位，添加成功后才 commit 为真实挂载并落盘。
+        // 若 commit 落盘失败，凭据已创建且 proxy_url 已写入凭据，代理确实在用；
+        // 仅代理池统计可能与凭据不一致，告警但不影响凭据可用性。
+        if let Some(token) = reservation_token {
+            if let Err(e) = self.proxy_pool.commit_reservation(token, credential_id) {
+                tracing::error!(
+                    "凭据 #{} 已创建，但代理池提交落盘失败（代理仍已写入凭据，运行无影响）: {}",
+                    credential_id,
+                    e
+                );
+            }
         }
 
         // 主动获取订阅等级，避免首次请求时 Free 账号绕过 Opus 模型过滤
@@ -467,10 +519,11 @@ impl AdminService {
     pub fn set_proxy_pool_settings(
         &self,
         req: super::types::UpdateProxyPoolSettingsRequest,
-    ) -> super::types::ProxyPoolSettingsResponse {
+    ) -> Result<super::types::ProxyPoolSettingsResponse, AdminServiceError> {
         self.proxy_pool
             .set_settings(req.auto_assign_enabled, req.probe_url)
-            .into()
+            .map(Into::into)
+            .map_err(Self::map_pool_error)
     }
 
     /// 添加代理
@@ -478,24 +531,20 @@ impl AdminService {
         &self,
         req: super::types::AddProxyRequest,
     ) -> Result<super::types::ProxyEntryView, AdminServiceError> {
-        if req.url.trim().is_empty() {
-            return Err(AdminServiceError::InvalidCredential(
-                "代理 URL 不能为空".to_string(),
-            ));
-        }
-        Ok(self
-            .proxy_pool
+        self.proxy_pool
             .add(req.url, req.username, req.password, req.label)
-            .into())
+            .map(Into::into)
+            .map_err(Self::map_pool_error)
     }
 
-    /// 批量添加代理
-    pub fn batch_add_proxy(&self, lines: &[String]) -> Vec<super::types::ProxyEntryView> {
-        self.proxy_pool
-            .batch_add(lines)
-            .into_iter()
-            .map(Into::into)
-            .collect()
+    /// 批量添加代理（返回成功条目 + 逐行错误）
+    pub fn batch_add_proxy(&self, lines: &[String]) -> super::types::BatchAddProxyResponse {
+        let result = self.proxy_pool.batch_add(lines);
+        super::types::BatchAddProxyResponse {
+            added: result.added.len(),
+            proxies: result.added.into_iter().map(Into::into).collect(),
+            errors: result.errors,
+        }
     }
 
     /// 更新代理
@@ -507,7 +556,7 @@ impl AdminService {
         self.proxy_pool
             .update(id, req.url, req.username, req.password, req.label)
             .map(Into::into)
-            .ok_or(AdminServiceError::NotFound { id })
+            .map_err(Self::map_pool_error)
     }
 
     /// 删除代理
@@ -515,7 +564,7 @@ impl AdminService {
         self.proxy_pool
             .remove(id)
             .map(|_| ())
-            .map_err(AdminServiceError::InvalidCredential)
+            .map_err(Self::map_pool_error)
     }
 
     /// 启用/禁用代理
@@ -527,18 +576,18 @@ impl AdminService {
         self.proxy_pool
             .set_disabled(id, disabled)
             .map(Into::into)
-            .ok_or(AdminServiceError::NotFound { id })
+            .map_err(Self::map_pool_error)
     }
 
-    /// 解绑代理的全部挂载
-    pub fn release_proxy(
-        &self,
-        id: u64,
-    ) -> Result<super::types::ProxyEntryView, AdminServiceError> {
-        self.proxy_pool
-            .release_all(id)
-            .map(Into::into)
-            .ok_or(AdminServiceError::NotFound { id })
+    /// 将 PoolError 映射为 AdminServiceError
+    fn map_pool_error(e: crate::proxy_pool::PoolError) -> AdminServiceError {
+        use crate::proxy_pool::PoolError;
+        match e {
+            PoolError::NotFound => AdminServiceError::NotFound { id: 0 },
+            PoolError::Invalid(m) => AdminServiceError::InvalidCredential(m),
+            PoolError::Conflict(m) => AdminServiceError::InvalidCredential(m),
+            PoolError::Persist(m) => AdminServiceError::InternalError(m),
+        }
     }
 
     /// 探测代理可用性
@@ -558,10 +607,7 @@ impl AdminService {
                 None => "连接成功".to_string(),
             }
         } else {
-            format!(
-                "连接失败: {}",
-                result.message.as_deref().unwrap_or("未知")
-            )
+            format!("连接失败: {}", result.message.as_deref().unwrap_or("未知"))
         };
         Ok(super::types::ProxyTestResponse {
             success: result.ok,
@@ -808,5 +854,109 @@ impl AdminService {
         } else {
             AdminServiceError::InternalError(msg)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::config::{Config, TlsBackend};
+    use crate::proxy_pool::ProxyPool;
+
+    fn build_service() -> AdminService {
+        let config = Config::default();
+        let tm = Arc::new(MultiTokenManager::new(config, vec![], None, None, false).expect("tm"));
+        let pool = Arc::new(ProxyPool::load(None, TlsBackend::Rustls));
+        AdminService::new(tm, Vec::<String>::new(), pool)
+    }
+
+    #[test]
+    fn test_add_proxy_rejects_invalid_url() {
+        let svc = build_service();
+        let err = svc
+            .add_proxy(super::super::types::AddProxyRequest {
+                url: "not-a-url".to_string(),
+                username: None,
+                password: None,
+                label: None,
+            })
+            .unwrap_err();
+        // 非法 URL 应映射为 400
+        assert_eq!(err.status_code(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_add_proxy_ok_and_list() {
+        let svc = build_service();
+        let view = svc
+            .add_proxy(super::super::types::AddProxyRequest {
+                url: "http://1.2.3.4:8080".to_string(),
+                username: Some("u".to_string()),
+                password: Some("p".to_string()),
+                label: Some("test".to_string()),
+            })
+            .unwrap();
+        assert_eq!(view.id, 1);
+        assert!(view.free);
+        let pool = svc.get_proxy_pool();
+        assert_eq!(pool.stats.total, 1);
+        assert_eq!(pool.stats.available, 1);
+    }
+
+    #[test]
+    fn test_batch_add_proxy_reports_errors() {
+        let svc = build_service();
+        let resp = svc.batch_add_proxy(&[
+            "http://1.2.3.4:8080".to_string(),
+            "bad".to_string(),
+            "socks5://5.6.7.8:1080 user pass label".to_string(),
+        ]);
+        assert_eq!(resp.added, 2);
+        assert_eq!(resp.errors.len(), 1);
+        assert_eq!(resp.errors[0].line, 2);
+    }
+
+    #[test]
+    fn test_update_proxy_settings_rejects_ssrf_probe_url() {
+        let svc = build_service();
+        let err = svc
+            .set_proxy_pool_settings(super::super::types::UpdateProxyPoolSettingsRequest {
+                auto_assign_enabled: None,
+                probe_url: Some("https://127.0.0.1/x".to_string()),
+            })
+            .unwrap_err();
+        assert_eq!(err.status_code(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_update_proxy_settings_accepts_valid_probe_url() {
+        let svc = build_service();
+        let resp = svc
+            .set_proxy_pool_settings(super::super::types::UpdateProxyPoolSettingsRequest {
+                auto_assign_enabled: Some(false),
+                probe_url: Some("https://api.ipify.org?format=json".to_string()),
+            })
+            .unwrap();
+        assert!(!resp.auto_assign_enabled);
+    }
+
+    #[test]
+    fn test_remove_proxy_in_use_rejected() {
+        let svc = build_service();
+        svc.add_proxy(super::super::types::AddProxyRequest {
+            url: "http://1.2.3.4:8080".to_string(),
+            username: None,
+            password: None,
+            label: None,
+        })
+        .unwrap();
+        // 直接通过池预占+提交模拟在用（不走真实 add_credential 避免网络）
+        let r = svc.proxy_pool.reserve_manual(1, false).unwrap();
+        svc.proxy_pool.commit_reservation(r.token, 999).unwrap();
+        let err = svc.remove_proxy(1).unwrap_err();
+        assert_eq!(err.status_code(), axum::http::StatusCode::BAD_REQUEST);
+        // 删除凭据后释放，可删
+        assert_eq!(svc.proxy_pool.release_by_cred(999), 1);
+        assert!(svc.remove_proxy(1).is_ok());
     }
 }

@@ -6,7 +6,6 @@ import {
   updateProxy,
   deleteProxy,
   setProxyDisabled,
-  releaseProxy,
   testProxy,
   updateProxyPoolSettings,
 } from '@/api/credentials'
@@ -70,15 +69,6 @@ export function useSetProxyDisabled() {
   return useMutation({
     mutationFn: ({ id, disabled }: { id: number; disabled: boolean }) =>
       setProxyDisabled(id, disabled),
-    onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
-  })
-}
-
-// 解绑代理
-export function useReleaseProxy() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (id: number) => releaseProxy(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY }),
   })
 }

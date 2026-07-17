@@ -140,6 +140,8 @@ export interface AddCredentialRequest {
   // 代理池：手动指定代理 ID / 允许复用在用 IP / 自动分配开关
   proxyId?: number
   proxyAllowReuse?: boolean
+  // 手动指定代理探测失败时是否仍强制创建（默认 false = 拒绝）
+  proxyAllowProbeFailure?: boolean
   usePool?: boolean
   displayName?: string
   kiroApiKey?: string
@@ -233,4 +235,16 @@ export interface ProxyTestResponse {
   message: string
   latencyMs?: number
   ip?: string
+}
+
+export interface BatchAddError {
+  line: number
+  content: string
+  error: string
+}
+
+export interface BatchAddProxyResponse {
+  added: number
+  proxies: ProxyEntryView[]
+  errors: BatchAddError[]
 }

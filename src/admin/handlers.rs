@@ -11,8 +11,9 @@ use super::{
     types::{
         AddCredentialRequest, AddProxyRequest, BatchAddProxyRequest, SetAllowOverageRequest,
         SetDisabledRequest, SetDisplayNameRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SetProxyDisabledRequest, SetRateLimitsRequest, SuccessResponse, UpdateProxyPoolSettingsRequest,
-        UpdateProxyRequest, UpdateRuntimeSettingsRequest, VersionInfoResponse,
+        SetProxyDisabledRequest, SetRateLimitsRequest, SuccessResponse,
+        UpdateProxyPoolSettingsRequest, UpdateProxyRequest, UpdateRuntimeSettingsRequest,
+        VersionInfoResponse,
     },
 };
 
@@ -290,7 +291,10 @@ pub async fn update_proxy_pool_settings(
     State(state): State<AdminState>,
     Json(payload): Json<UpdateProxyPoolSettingsRequest>,
 ) -> impl IntoResponse {
-    Json(state.service.set_proxy_pool_settings(payload))
+    match state.service.set_proxy_pool_settings(payload) {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
 }
 
 /// POST /api/admin/proxy-pool
@@ -309,8 +313,7 @@ pub async fn batch_add_proxy(
     State(state): State<AdminState>,
     Json(payload): Json<BatchAddProxyRequest>,
 ) -> impl IntoResponse {
-    let added = state.service.batch_add_proxy(&payload.lines);
-    Json(serde_json::json!({ "added": added.len(), "proxies": added }))
+    Json(state.service.batch_add_proxy(&payload.lines))
 }
 
 /// PUT /api/admin/proxy-pool/:id
@@ -348,22 +351,8 @@ pub async fn set_proxy_disabled(
     }
 }
 
-/// POST /api/admin/proxy-pool/:id/release
-pub async fn release_proxy(
-    State(state): State<AdminState>,
-    Path(id): Path<u64>,
-) -> impl IntoResponse {
-    match state.service.release_proxy(id) {
-        Ok(entry) => Json(entry).into_response(),
-        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
-    }
-}
-
 /// POST /api/admin/proxy-pool/:id/test
-pub async fn test_proxy(
-    State(state): State<AdminState>,
-    Path(id): Path<u64>,
-) -> impl IntoResponse {
+pub async fn test_proxy(State(state): State<AdminState>, Path(id): Path<u64>) -> impl IntoResponse {
     match state.service.test_proxy(id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),

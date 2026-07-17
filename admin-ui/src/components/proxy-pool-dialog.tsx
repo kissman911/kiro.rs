@@ -14,7 +14,6 @@ import {
   useBatchAddProxy,
   useDeleteProxy,
   useSetProxyDisabled,
-  useReleaseProxy,
   useTestProxy,
   useUpdateProxyPoolSettings,
 } from '@/hooks/use-proxy-pool'
@@ -32,7 +31,6 @@ export function ProxyPoolDialog({ open, onOpenChange }: ProxyPoolDialogProps) {
   const batchAdd = useBatchAddProxy()
   const deleteProxy = useDeleteProxy()
   const setDisabled = useSetProxyDisabled()
-  const release = useReleaseProxy()
   const test = useTestProxy()
   const updateSettings = useUpdateProxyPoolSettings()
 
@@ -81,9 +79,21 @@ export function ProxyPoolDialog({ open, onOpenChange }: ProxyPoolDialogProps) {
     }
     batchAdd.mutate(lines, {
       onSuccess: (data) => {
-        toast.success(`已添加 ${data.added} 个代理`)
-        setBatchText('')
-        setShowBatch(false)
+        if (data.added > 0) {
+          toast.success(`已添加 ${data.added} 个代理`)
+        }
+        if (data.errors && data.errors.length > 0) {
+          const detail = data.errors
+            .map((e) => `第${e.line}行: ${e.error}`)
+            .join('\n')
+          toast.error(`${data.errors.length} 行导入失败\n${detail}`, {
+            duration: 8000,
+          })
+        }
+        if (data.added > 0) {
+          setBatchText('')
+          if (!data.errors || data.errors.length === 0) setShowBatch(false)
+        }
       },
       onError: (err) => toast.error(`批量添加失败: ${extractErrorMessage(err)}`),
     })
@@ -103,21 +113,13 @@ export function ProxyPoolDialog({ open, onOpenChange }: ProxyPoolDialogProps) {
 
   const handleDelete = (p: ProxyEntryView) => {
     if (p.usageCount > 0) {
-      toast.error('代理正在使用中，请先解绑')
+      toast.error('代理正在使用中，请先删除/改绑对应凭据')
       return
     }
     if (!confirm(`确认删除代理 #${p.id} ${p.label || p.url}？`)) return
     deleteProxy.mutate(p.id, {
       onSuccess: () => toast.success('代理已删除'),
       onError: (err) => toast.error(`删除失败: ${extractErrorMessage(err)}`),
-    })
-  }
-
-  const handleRelease = (id: number) => {
-    if (!confirm(`确认解绑代理 #${id} 的全部凭据挂载？（不影响凭据本身，仅清空池记录）`)) return
-    release.mutate(id, {
-      onSuccess: () => toast.success('已解绑'),
-      onError: (err) => toast.error(`解绑失败: ${extractErrorMessage(err)}`),
     })
   }
 
@@ -282,9 +284,12 @@ export function ProxyPoolDialog({ open, onOpenChange }: ProxyPoolDialogProps) {
                     {p.disabled ? '启用' : '禁用'}
                   </Button>
                   {p.usageCount > 0 && (
-                    <Button size="sm" variant="outline" onClick={() => handleRelease(p.id)}>
-                      解绑({p.usageCount})
-                    </Button>
+                    <span
+                      className="text-xs text-muted-foreground"
+                      title="代理已写入对应凭据，要释放请删除或改绑该凭据，避免账实不一致"
+                    >
+                      在用凭据 [{p.assignments.join(', ')}]
+                    </span>
                   )}
                   <Button
                     size="sm"

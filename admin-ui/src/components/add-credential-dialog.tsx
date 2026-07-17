@@ -44,6 +44,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 const [proxySource, setProxySource] = useState<'auto' | 'pool' | 'manual'>('auto')
   const [selectedProxyId, setSelectedProxyId] = useState('')
   const [proxyAllowReuse, setProxyAllowReuse] = useState(false)
+  const [proxyAllowProbeFailure, setProxyAllowProbeFailure] = useState(false)
   const [endpoint, setEndpoint] = useState('')
   const [allowOverage, setAllowOverage] = useState(false)
   const [rateLimitWindow, setRateLimitWindow] = useState('')
@@ -72,6 +73,7 @@ const [proxySource, setProxySource] = useState<'auto' | 'pool' | 'manual'>('auto
     setProxySource('auto')
     setSelectedProxyId('')
     setProxyAllowReuse(false)
+    setProxyAllowProbeFailure(false)
     setEndpoint('')
     setAllowOverage(false)
     setRateLimitWindow('')
@@ -142,6 +144,7 @@ const [proxySource, setProxySource] = useState<'auto' | 'pool' | 'manual'>('auto
           ? {
               proxyId: Number(selectedProxyId),
               proxyAllowReuse: proxyAllowReuse || undefined,
+              proxyAllowProbeFailure: proxyAllowProbeFailure || undefined,
             }
           : { usePool: true as const }
 
@@ -523,6 +526,15 @@ const [proxySource, setProxySource] = useState<'auto' | 'pool' | 'manual'>('auto
                       disabled={isPending}
                     />
                     允许复用已在用的 IP（多凭据共享）
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={proxyAllowProbeFailure}
+                      onChange={(e) => setProxyAllowProbeFailure(e.target.checked)}
+                      disabled={isPending}
+                    />
+                    探测失败仍强制分配（默认探测不通就拒绝创建）
                   </label>
                 </>
               )}

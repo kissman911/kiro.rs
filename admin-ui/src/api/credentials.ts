@@ -22,6 +22,7 @@ import type {
   ProxyPoolSettingsResponse,
   UpdateProxyPoolSettingsRequest,
   ProxyTestResponse,
+  BatchAddProxyResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -212,8 +213,8 @@ export async function addProxy(req: AddProxyRequest): Promise<ProxyEntryView> {
 // 批量添加代理
 export async function batchAddProxy(
   lines: string[]
-): Promise<{ added: number; proxies: ProxyEntryView[] }> {
-  const { data } = await api.post<{ added: number; proxies: ProxyEntryView[] }>(
+): Promise<BatchAddProxyResponse> {
+  const { data } = await api.post<BatchAddProxyResponse>(
     '/proxy-pool/batch',
     { lines }
   )
@@ -243,12 +244,6 @@ export async function setProxyDisabled(
   const { data } = await api.post<ProxyEntryView>(`/proxy-pool/${id}/disabled`, {
     disabled,
   })
-  return data
-}
-
-// 解绑代理全部挂载
-export async function releaseProxy(id: number): Promise<ProxyEntryView> {
-  const { data } = await api.post<ProxyEntryView>(`/proxy-pool/${id}/release`)
   return data
 }
 

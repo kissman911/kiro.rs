@@ -237,6 +237,10 @@ pub struct AddCredentialRequest {
     #[serde(default, alias = "proxy_allow_reuse")]
     pub proxy_allow_reuse: Option<bool>,
 
+    /// 手动指定代理时，探测失败是否仍强制创建（默认 false = 探测失败拒绝）
+    #[serde(default, alias = "proxy_allow_probe_failure")]
+    pub proxy_allow_probe_failure: Option<bool>,
+
     /// 是否从代理池自动分配空闲 IP（可选）。
     /// None = 沿用池设置的默认开关；true/false 显式覆盖。
     #[serde(default, alias = "use_pool")]
@@ -358,7 +362,9 @@ pub struct UpdateRuntimeSettingsRequest {
 
 // ============ 代理池 ============
 
-use crate::proxy_pool::{ProxyEntry, ProxyPoolSettings, ProxyPoolStats, ProbeResult};
+use crate::proxy_pool::{
+    BatchAddError, ProbeResult, ProxyEntry, ProxyPoolSettings, ProxyPoolStats,
+};
 
 /// 代理池列表响应
 #[derive(Debug, Serialize)]
@@ -424,6 +430,15 @@ pub struct AddProxyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BatchAddProxyRequest {
     pub lines: Vec<String>,
+}
+
+/// 批量添加代理响应（含逐行错误）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchAddProxyResponse {
+    pub added: usize,
+    pub proxies: Vec<ProxyEntryView>,
+    pub errors: Vec<BatchAddError>,
 }
 
 /// 更新代理请求（字段均可选）
