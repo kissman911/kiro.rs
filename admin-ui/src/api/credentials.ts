@@ -15,6 +15,13 @@ import type {
   VersionInfoResponse,
   RuntimeSettingsResponse,
   UpdateRuntimeSettingsRequest,
+  ProxyPoolResponse,
+  ProxyEntryView,
+  AddProxyRequest,
+  UpdateProxyRequest,
+  ProxyPoolSettingsResponse,
+  UpdateProxyPoolSettingsRequest,
+  ProxyTestResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -185,5 +192,82 @@ export async function updateRuntimeSettings(
 // 获取版本信息
 export async function getVersionInfo(): Promise<VersionInfoResponse> {
   const { data } = await api.get<VersionInfoResponse>('/version')
+  return data
+}
+
+// ============ 代理池 ============
+
+// 获取代理池（列表 + 统计 + 设置）
+export async function getProxyPool(): Promise<ProxyPoolResponse> {
+  const { data } = await api.get<ProxyPoolResponse>('/proxy-pool')
+  return data
+}
+
+// 添加代理
+export async function addProxy(req: AddProxyRequest): Promise<ProxyEntryView> {
+  const { data } = await api.post<ProxyEntryView>('/proxy-pool', req)
+  return data
+}
+
+// 批量添加代理
+export async function batchAddProxy(
+  lines: string[]
+): Promise<{ added: number; proxies: ProxyEntryView[] }> {
+  const { data } = await api.post<{ added: number; proxies: ProxyEntryView[] }>(
+    '/proxy-pool/batch',
+    { lines }
+  )
+  return data
+}
+
+// 更新代理
+export async function updateProxy(
+  id: number,
+  req: UpdateProxyRequest
+): Promise<ProxyEntryView> {
+  const { data } = await api.put<ProxyEntryView>(`/proxy-pool/${id}`, req)
+  return data
+}
+
+// 删除代理
+export async function deleteProxy(id: number): Promise<SuccessResponse> {
+  const { data } = await api.delete<SuccessResponse>(`/proxy-pool/${id}`)
+  return data
+}
+
+// 启用/禁用代理
+export async function setProxyDisabled(
+  id: number,
+  disabled: boolean
+): Promise<ProxyEntryView> {
+  const { data } = await api.post<ProxyEntryView>(`/proxy-pool/${id}/disabled`, {
+    disabled,
+  })
+  return data
+}
+
+// 解绑代理全部挂载
+export async function releaseProxy(id: number): Promise<ProxyEntryView> {
+  const { data } = await api.post<ProxyEntryView>(`/proxy-pool/${id}/release`)
+  return data
+}
+
+// 探测代理
+export async function testProxy(id: number): Promise<ProxyTestResponse> {
+  const { data } = await api.post<ProxyTestResponse>(`/proxy-pool/${id}/test`)
+  return data
+}
+
+// 获取代理池设置
+export async function getProxyPoolSettings(): Promise<ProxyPoolSettingsResponse> {
+  const { data } = await api.get<ProxyPoolSettingsResponse>('/proxy-pool/settings')
+  return data
+}
+
+// 更新代理池设置
+export async function updateProxyPoolSettings(
+  req: UpdateProxyPoolSettingsRequest
+): Promise<ProxyPoolSettingsResponse> {
+  const { data } = await api.put<ProxyPoolSettingsResponse>('/proxy-pool/settings', req)
   return data
 }

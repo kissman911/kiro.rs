@@ -39,12 +39,15 @@ pub struct AdminService {
     cache_path: Option<PathBuf>,
     /// 已注册的端点名称集合（用于 add_credential 校验）
     known_endpoints: HashSet<String>,
+    /// IP 代理池
+    proxy_pool: Arc<crate::proxy_pool::ProxyPool>,
 }
 
 impl AdminService {
     pub fn new(
         token_manager: Arc<MultiTokenManager>,
         known_endpoints: impl IntoIterator<Item = String>,
+        proxy_pool: Arc<crate::proxy_pool::ProxyPool>,
     ) -> Self {
         let cache_path = token_manager
             .cache_dir()
@@ -57,6 +60,7 @@ impl AdminService {
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
+            proxy_pool,
         }
     }
 
@@ -239,6 +243,91 @@ impl AdminService {
             }
         }
 
+        // 代理池分配：仅当凭据未手填 proxy_url 时才介入
+        // 手动指定 proxy_id > 自动分配（受 use_pool / 池默认开关控制）
+        let mut req = req;
+        let mut assigned_proxy_id: Option<u64> = None;
+        let manual_proxy_url_present = req
+            .proxy_url
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !manual_proxy_url_present {
+            let pool = &self.proxy_pool;
+            let allow_reuse = req.proxy_allow_reuse.unwrap_or(false);
+            let want_auto = req.use_pool.unwrap_or_else(|| pool.is_auto_assign_enabled());
+            if let Some(pid) = req.proxy_id {
+                // 手动指定：分配前探测，不通仅告警不阻断（用户明确指定了该 IP）
+                if let Some(entry) = pool.get(pid) {
+                    let probe = pool.probe(&entry).await;
+                    pool.record_probe(pid, probe.clone());
+                    if !probe.ok {
+                        tracing::warn!(
+                            "手动指定代理 #{} 探测失败({})，仍按用户意愿分配",
+                            pid,
+                            probe.message.as_deref().unwrap_or("未知")
+                        );
+                    }
+                }
+                match pool.assign(pid, None, allow_reuse) {
+                    Ok(r) => {
+                        req.proxy_url = Some(r.proxy.url.clone());
+                        req.proxy_username = r.proxy.username.clone();
+                        req.proxy_password = r.proxy.password.clone();
+                        assigned_proxy_id = Some(r.proxy.id);
+                        tracing::info!(
+                            "手动指定代理 #{} ({}){} 分配给新凭据",
+                            r.proxy.id,
+                            if r.proxy.label.is_empty() { &r.proxy.url } else { &r.proxy.label },
+                            if r.reused { " ♻️复用在用IP" } else { "" }
+                        );
+                    }
+                    Err(e) => {
+                        return Err(AdminServiceError::InvalidCredential(format!(
+                            "指定代理分配失败: {}",
+                            e
+                        )));
+                    }
+                }
+            } else if want_auto {
+                // 自动分配：优先空闲，逐个探测，跳过不通的；无空闲时复用在用 IP
+                let mut skip: Vec<u64> = Vec::new();
+                loop {
+                    match pool.auto_assign(None, &skip) {
+                        Some(r) => {
+                            let probe = pool.probe(&r.proxy).await;
+                            pool.record_probe(r.proxy.id, probe.clone());
+                            if probe.ok {
+                                req.proxy_url = Some(r.proxy.url.clone());
+                                req.proxy_username = r.proxy.username.clone();
+                                req.proxy_password = r.proxy.password.clone();
+                                assigned_proxy_id = Some(r.proxy.id);
+                                tracing::info!(
+                                    "自动分配代理 #{} ({}){} 给新凭据",
+                                    r.proxy.id,
+                                    if r.proxy.label.is_empty() { &r.proxy.url } else { &r.proxy.label },
+                                    if r.reused { " ♻️复用在用IP" } else { "" }
+                                );
+                                break;
+                            } else {
+                                // 探测失败：未记录分配（cred_id=None），直接跳过该代理重试
+                                tracing::warn!(
+                                    "代理 #{} 探测失败({})，跳过",
+                                    r.proxy.id,
+                                    probe.message.as_deref().unwrap_or("未知")
+                                );
+                                skip.push(r.proxy.id);
+                            }
+                        }
+                        None => {
+                            tracing::warn!("代理池无可用 IP（全部探测失败或池为空），新凭据不分配代理");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // 构建凭据对象
         let email = req.email.clone();
         let new_cred = KiroCredentials {
@@ -278,6 +367,12 @@ impl AdminService {
             .add_credential(new_cred)
             .await
             .map_err(|e| self.classify_add_error(e))?;
+
+        // 回填代理池分配记录（用真实 credId）。
+        // 分配阶段以 cred_id=None 试排，不预占；添加成功后才正式记录，避免失败时假性占用。
+        if let Some(pid) = assigned_proxy_id {
+            self.proxy_pool.record_assignment(pid, credential_id);
+        }
 
         // 主动获取订阅等级，避免首次请求时 Free 账号绕过 Opus 模型过滤
         if let Err(e) = self.token_manager.get_usage_limits_for(credential_id).await {
@@ -341,7 +436,139 @@ impl AdminService {
         }
         self.save_balance_cache();
 
+        // 释放代理池中该凭据的占用
+        let released = self.proxy_pool.release_by_cred(id);
+        if released > 0 {
+            tracing::info!("删除凭据 #{}，释放 {} 个代理分配", id, released);
+        }
+
         Ok(())
+    }
+
+    // ============ 代理池 ============
+
+    /// 获取代理池列表 + 统计
+    pub fn get_proxy_pool(&self) -> super::types::ProxyPoolResponse {
+        let settings = self.proxy_pool.settings();
+        super::types::ProxyPoolResponse {
+            stats: self.proxy_pool.stats(),
+            auto_assign_enabled: settings.auto_assign_enabled,
+            probe_url: settings.probe_url,
+            proxies: self.proxy_pool.list().into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// 获取代理池设置
+    pub fn get_proxy_pool_settings(&self) -> super::types::ProxyPoolSettingsResponse {
+        self.proxy_pool.settings().into()
+    }
+
+    /// 更新代理池设置
+    pub fn set_proxy_pool_settings(
+        &self,
+        req: super::types::UpdateProxyPoolSettingsRequest,
+    ) -> super::types::ProxyPoolSettingsResponse {
+        self.proxy_pool
+            .set_settings(req.auto_assign_enabled, req.probe_url)
+            .into()
+    }
+
+    /// 添加代理
+    pub fn add_proxy(
+        &self,
+        req: super::types::AddProxyRequest,
+    ) -> Result<super::types::ProxyEntryView, AdminServiceError> {
+        if req.url.trim().is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "代理 URL 不能为空".to_string(),
+            ));
+        }
+        Ok(self
+            .proxy_pool
+            .add(req.url, req.username, req.password, req.label)
+            .into())
+    }
+
+    /// 批量添加代理
+    pub fn batch_add_proxy(&self, lines: &[String]) -> Vec<super::types::ProxyEntryView> {
+        self.proxy_pool
+            .batch_add(lines)
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    /// 更新代理
+    pub fn update_proxy(
+        &self,
+        id: u64,
+        req: super::types::UpdateProxyRequest,
+    ) -> Result<super::types::ProxyEntryView, AdminServiceError> {
+        self.proxy_pool
+            .update(id, req.url, req.username, req.password, req.label)
+            .map(Into::into)
+            .ok_or(AdminServiceError::NotFound { id })
+    }
+
+    /// 删除代理
+    pub fn remove_proxy(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.proxy_pool
+            .remove(id)
+            .map(|_| ())
+            .map_err(AdminServiceError::InvalidCredential)
+    }
+
+    /// 启用/禁用代理
+    pub fn set_proxy_disabled(
+        &self,
+        id: u64,
+        disabled: bool,
+    ) -> Result<super::types::ProxyEntryView, AdminServiceError> {
+        self.proxy_pool
+            .set_disabled(id, disabled)
+            .map(Into::into)
+            .ok_or(AdminServiceError::NotFound { id })
+    }
+
+    /// 解绑代理的全部挂载
+    pub fn release_proxy(
+        &self,
+        id: u64,
+    ) -> Result<super::types::ProxyEntryView, AdminServiceError> {
+        self.proxy_pool
+            .release_all(id)
+            .map(Into::into)
+            .ok_or(AdminServiceError::NotFound { id })
+    }
+
+    /// 探测代理可用性
+    pub async fn test_proxy(
+        &self,
+        id: u64,
+    ) -> Result<super::types::ProxyTestResponse, AdminServiceError> {
+        let entry = self
+            .proxy_pool
+            .get(id)
+            .ok_or(AdminServiceError::NotFound { id })?;
+        let result = self.proxy_pool.probe(&entry).await;
+        self.proxy_pool.record_probe(id, result.clone());
+        let message = if result.ok {
+            match result.latency_ms {
+                Some(ms) => format!("连接成功，延迟 {}ms", ms),
+                None => "连接成功".to_string(),
+            }
+        } else {
+            format!(
+                "连接失败: {}",
+                result.message.as_deref().unwrap_or("未知")
+            )
+        };
+        Ok(super::types::ProxyTestResponse {
+            success: result.ok,
+            message,
+            latency_ms: result.latency_ms,
+            ip: result.ip,
+        })
     }
 
     /// 获取负载均衡模式

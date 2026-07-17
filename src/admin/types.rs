@@ -229,6 +229,19 @@ pub struct AddCredentialRequest {
     #[serde(alias = "proxy_password")]
     pub proxy_password: Option<String>,
 
+    /// 手动指定代理池中的代理 ID（可选）。指定后从池分配该 IP。
+    #[serde(default, alias = "proxy_id")]
+    pub proxy_id: Option<u64>,
+
+    /// 手动指定代理时，是否允许复用已在用的 IP（默认 false）
+    #[serde(default, alias = "proxy_allow_reuse")]
+    pub proxy_allow_reuse: Option<bool>,
+
+    /// 是否从代理池自动分配空闲 IP（可选）。
+    /// None = 沿用池设置的默认开关；true/false 显式覆盖。
+    #[serde(default, alias = "use_pool")]
+    pub use_pool: Option<bool>,
+
     /// Kiro API Key（API Key 凭据必填，格式: ksk_xxxxxxxx）
     /// 设置后直接作为 Bearer Token 使用，无需 refreshToken
     #[serde(skip_serializing_if = "Option::is_none", alias = "kiro_api_key")]
@@ -341,6 +354,145 @@ pub struct UpdateRuntimeSettingsRequest {
     /// 是否启用双阶段执行
     #[serde(default)]
     pub native_like_two_phase_flow: Option<bool>,
+}
+
+// ============ 代理池 ============
+
+use crate::proxy_pool::{ProxyEntry, ProxyPoolSettings, ProxyPoolStats, ProbeResult};
+
+/// 代理池列表响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPoolResponse {
+    #[serde(flatten)]
+    pub stats: ProxyPoolStats,
+    pub auto_assign_enabled: bool,
+    pub probe_url: String,
+    pub proxies: Vec<ProxyEntryView>,
+}
+
+/// 单个代理展示（附带派生字段）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyEntryView {
+    pub id: u64,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub label: String,
+    pub disabled: bool,
+    pub assignments: Vec<u64>,
+    pub usage_count: usize,
+    pub free: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<ProbeResult>,
+}
+
+impl From<ProxyEntry> for ProxyEntryView {
+    fn from(e: ProxyEntry) -> Self {
+        let usage_count = e.usage_count();
+        let free = e.is_free();
+        Self {
+            id: e.id,
+            url: e.url,
+            username: e.username,
+            label: e.label,
+            disabled: e.disabled,
+            assignments: e.assignments,
+            usage_count,
+            free,
+            last_check: e.last_check,
+        }
+    }
+}
+
+/// 添加代理请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddProxyRequest {
+    pub url: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// 批量添加代理请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchAddProxyRequest {
+    pub lines: Vec<String>,
+}
+
+/// 更新代理请求（字段均可选）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProxyRequest {
+    #[serde(default)]
+    pub url: Option<String>,
+    /// 包裹一层：Some(None) 表示显式清空，None 表示不改
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub username: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub password: Option<Option<String>>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// 设置禁用状态请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetProxyDisabledRequest {
+    pub disabled: bool,
+}
+
+/// 更新代理池设置请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProxyPoolSettingsRequest {
+    #[serde(default, alias = "auto_assign_enabled")]
+    pub auto_assign_enabled: Option<bool>,
+    #[serde(default, alias = "probe_url")]
+    pub probe_url: Option<String>,
+}
+
+/// 代理池设置响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPoolSettingsResponse {
+    pub auto_assign_enabled: bool,
+    pub probe_url: String,
+}
+
+impl From<ProxyPoolSettings> for ProxyPoolSettingsResponse {
+    fn from(s: ProxyPoolSettings) -> Self {
+        Self {
+            auto_assign_enabled: s.auto_assign_enabled,
+            probe_url: s.probe_url,
+        }
+    }
+}
+
+/// 代理探测响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyTestResponse {
+    pub success: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
+}
+
+/// 自定义反序列：区分“字段缺失”与“显式 null”
+fn deserialize_optional_field<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<String>::deserialize(deserializer)?))
 }
 
 // ============ 通用响应 ============

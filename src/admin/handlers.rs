@@ -9,9 +9,10 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, SetAllowOverageRequest, SetDisabledRequest, SetDisplayNameRequest,
-        SetLoadBalancingModeRequest, SetPriorityRequest, SetRateLimitsRequest, SuccessResponse,
-        UpdateRuntimeSettingsRequest, VersionInfoResponse,
+        AddCredentialRequest, AddProxyRequest, BatchAddProxyRequest, SetAllowOverageRequest,
+        SetDisabledRequest, SetDisplayNameRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
+        SetProxyDisabledRequest, SetRateLimitsRequest, SuccessResponse, UpdateProxyPoolSettingsRequest,
+        UpdateProxyRequest, UpdateRuntimeSettingsRequest, VersionInfoResponse,
     },
 };
 
@@ -268,6 +269,103 @@ pub async fn update_runtime_settings(
 ) -> impl IntoResponse {
     match state.service.update_runtime_settings(payload) {
         Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+// ============ 代理池 ============
+
+/// GET /api/admin/proxy-pool
+pub async fn get_proxy_pool(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_proxy_pool())
+}
+
+/// GET /api/admin/proxy-pool/settings
+pub async fn get_proxy_pool_settings(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_proxy_pool_settings())
+}
+
+/// PUT /api/admin/proxy-pool/settings
+pub async fn update_proxy_pool_settings(
+    State(state): State<AdminState>,
+    Json(payload): Json<UpdateProxyPoolSettingsRequest>,
+) -> impl IntoResponse {
+    Json(state.service.set_proxy_pool_settings(payload))
+}
+
+/// POST /api/admin/proxy-pool
+pub async fn add_proxy(
+    State(state): State<AdminState>,
+    Json(payload): Json<AddProxyRequest>,
+) -> impl IntoResponse {
+    match state.service.add_proxy(payload) {
+        Ok(entry) => Json(entry).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/proxy-pool/batch
+pub async fn batch_add_proxy(
+    State(state): State<AdminState>,
+    Json(payload): Json<BatchAddProxyRequest>,
+) -> impl IntoResponse {
+    let added = state.service.batch_add_proxy(&payload.lines);
+    Json(serde_json::json!({ "added": added.len(), "proxies": added }))
+}
+
+/// PUT /api/admin/proxy-pool/:id
+pub async fn update_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<UpdateProxyRequest>,
+) -> impl IntoResponse {
+    match state.service.update_proxy(id, payload) {
+        Ok(entry) => Json(entry).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// DELETE /api/admin/proxy-pool/:id
+pub async fn delete_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.remove_proxy(id) {
+        Ok(_) => Json(SuccessResponse::new(format!("代理 #{} 已删除", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/proxy-pool/:id/disabled
+pub async fn set_proxy_disabled(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetProxyDisabledRequest>,
+) -> impl IntoResponse {
+    match state.service.set_proxy_disabled(id, payload.disabled) {
+        Ok(entry) => Json(entry).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/proxy-pool/:id/release
+pub async fn release_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.release_proxy(id) {
+        Ok(entry) => Json(entry).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/proxy-pool/:id/test
+pub async fn test_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+) -> impl IntoResponse {
+    match state.service.test_proxy(id).await {
+        Ok(resp) => Json(resp).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

@@ -5,6 +5,7 @@ mod common;
 mod http_client;
 mod kiro;
 mod model;
+mod proxy_pool;
 pub mod token;
 mod version;
 
@@ -182,8 +183,15 @@ async fn main() {
             tracing::warn!("admin_api_key 配置为空，Admin API 未启用");
             anthropic_app
         } else {
-            let admin_service =
-                admin::AdminService::new(token_manager.clone(), endpoint_names.clone());
+            let proxy_pool = std::sync::Arc::new(proxy_pool::ProxyPool::load(
+                token_manager.cache_dir().map(|d| d.join("proxy_pool.json")),
+                config.tls_backend,
+            ));
+            let admin_service = admin::AdminService::new(
+                token_manager.clone(),
+                endpoint_names.clone(),
+                proxy_pool,
+            );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
             let admin_app = admin::create_admin_router(admin_state);
 

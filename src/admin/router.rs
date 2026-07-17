@@ -7,12 +7,14 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, clear_credential_cooldown, delete_credential, force_refresh_token,
-        get_all_credentials, get_credential_balance, get_load_balancing_mode, get_runtime_settings,
-        get_version_info, reset_all_success_count, reset_failure_count, reset_success_count,
-        set_credential_allow_overage, set_credential_disabled, set_credential_display_name,
-        set_credential_priority, set_credential_rate_limits, set_load_balancing_mode,
-        update_runtime_settings,
+        add_credential, add_proxy, batch_add_proxy, clear_credential_cooldown, delete_credential,
+        delete_proxy, force_refresh_token, get_all_credentials, get_credential_balance,
+        get_load_balancing_mode, get_proxy_pool, get_proxy_pool_settings, get_runtime_settings,
+        get_version_info, release_proxy, reset_all_success_count, reset_failure_count,
+        reset_success_count, set_credential_allow_overage, set_credential_disabled,
+        set_credential_display_name, set_credential_priority, set_credential_rate_limits,
+        set_load_balancing_mode, set_proxy_disabled, test_proxy, update_proxy,
+        update_proxy_pool_settings, update_runtime_settings,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -80,6 +82,17 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/config/settings",
             get(get_runtime_settings).put(update_runtime_settings),
         )
+        // 代理池
+        .route("/proxy-pool", get(get_proxy_pool).post(add_proxy))
+        .route("/proxy-pool/batch", post(batch_add_proxy))
+        .route(
+            "/proxy-pool/settings",
+            get(get_proxy_pool_settings).put(update_proxy_pool_settings),
+        )
+        .route("/proxy-pool/{id}", put(update_proxy).delete(delete_proxy))
+        .route("/proxy-pool/{id}/disabled", post(set_proxy_disabled))
+        .route("/proxy-pool/{id}/release", post(release_proxy))
+        .route("/proxy-pool/{id}/test", post(test_proxy))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth_middleware,

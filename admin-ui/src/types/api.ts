@@ -137,6 +137,10 @@ export interface AddCredentialRequest {
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string
+  // 代理池：手动指定代理 ID / 允许复用在用 IP / 自动分配开关
+  proxyId?: number
+  proxyAllowReuse?: boolean
+  usePool?: boolean
   displayName?: string
   kiroApiKey?: string
   endpoint?: string
@@ -165,4 +169,68 @@ export interface UpdateRuntimeSettingsRequest {
   suspiciousCooldownMinutes?: number
   extractThinking?: boolean
   nativeLikeTwoPhaseFlow?: boolean
+}
+
+// ============ 代理池 ============
+
+export interface ProbeResult {
+  ok: boolean
+  latencyMs?: number
+  ip?: string
+  message?: string
+  at: string
+}
+
+export interface ProxyEntryView {
+  id: number
+  url: string
+  username?: string
+  label: string
+  disabled: boolean
+  assignments: number[]
+  usageCount: number
+  free: boolean
+  lastCheck?: ProbeResult
+}
+
+export interface ProxyPoolResponse {
+  total: number
+  available: number
+  assigned: number
+  shared: number
+  disabled: number
+  autoAssignEnabled: boolean
+  probeUrl: string
+  proxies: ProxyEntryView[]
+}
+
+export interface AddProxyRequest {
+  url: string
+  username?: string
+  password?: string
+  label?: string
+}
+
+export interface UpdateProxyRequest {
+  url?: string
+  username?: string | null
+  password?: string | null
+  label?: string
+}
+
+export interface ProxyPoolSettingsResponse {
+  autoAssignEnabled: boolean
+  probeUrl: string
+}
+
+export interface UpdateProxyPoolSettingsRequest {
+  autoAssignEnabled?: boolean
+  probeUrl?: string
+}
+
+export interface ProxyTestResponse {
+  success: boolean
+  message: string
+  latencyMs?: number
+  ip?: string
 }
