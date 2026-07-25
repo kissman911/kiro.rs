@@ -136,6 +136,24 @@ pub async fn get_models() -> impl IntoResponse {
 
     let models = vec![
         Model {
+            id: "claude-opus-5".to_string(),
+            object: "model".to_string(),
+            created: 1784851200, // Jul 24, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 5".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 128_000,
+        },
+        Model {
+            id: "claude-opus-5-thinking".to_string(),
+            object: "model".to_string(),
+            created: 1784851200, // Jul 24, 2026
+            owned_by: "anthropic".to_string(),
+            display_name: "Claude Opus 5 (Thinking)".to_string(),
+            model_type: "chat".to_string(),
+            max_tokens: 128_000,
+        },
+        Model {
             id: "gpt-5.6-sol".to_string(),
             object: "model".to_string(),
             created: 1783555200, // Jul 9, 2026
@@ -865,7 +883,10 @@ pub(crate) async fn handle_non_stream_request(
 
 fn model_uses_default_thinking(model: &str) -> bool {
     let model_lower = model.to_lowercase();
-    model_lower.contains("sonnet-5")
+    model_lower.contains("opus-5")
+        || model_lower.contains("opus.5")
+        || model_lower.contains("opus 5")
+        || model_lower.contains("sonnet-5")
         || model_lower.contains("sonnet.5")
         || model_lower.contains("sonnet 5")
 }
@@ -882,7 +903,7 @@ fn normalize_thinking_for_model(payload: &mut MessagesRequest) {
     {
         tracing::info!(
             model = %payload.model,
-            "Sonnet 5 不支持 enabled thinking，自动改写为 adaptive"
+            "当前模型不支持 enabled thinking，自动改写为 adaptive"
         );
         payload.thinking = Some(Thinking {
             thinking_type: "adaptive".to_string(),
@@ -908,7 +929,7 @@ fn should_parse_thinking(model: &str, thinking: Option<&Thinking>) -> bool {
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
 ///
-/// - Sonnet 5：只支持 adaptive thinking，不能使用 enabled + budget_tokens
+/// - Opus 5 / Sonnet 5：默认启用 adaptive thinking，不能使用 enabled + budget_tokens
 /// - Opus 4.8 / 4.7：只支持 adaptive thinking，不能使用 enabled + budget_tokens
 /// - Opus 4.6 / Sonnet 4.6：优先使用 adaptive thinking
 /// - 旧模型：继续使用 enabled + budget_tokens
@@ -923,11 +944,14 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     let is_sonnet_5 = model_lower.contains("sonnet-5")
         || model_lower.contains("sonnet.5")
         || model_lower.contains("sonnet 5");
+    let is_opus_5 = model_lower.contains("opus-5")
+        || model_lower.contains("opus.5")
+        || model_lower.contains("opus 5");
     let is_4_8 = model_lower.contains("4-8") || model_lower.contains("4.8");
     let is_4_7 = model_lower.contains("4-7") || model_lower.contains("4.7");
     let is_4_6 = model_lower.contains("4-6") || model_lower.contains("4.6");
-    let use_adaptive =
-        (is_opus && (is_4_8 || is_4_7 || is_4_6)) || (is_sonnet && (is_sonnet_5 || is_4_6));
+    let use_adaptive = (is_opus && (is_opus_5 || is_4_8 || is_4_7 || is_4_6))
+        || (is_sonnet && (is_sonnet_5 || is_4_6));
 
     let thinking_type = if use_adaptive { "adaptive" } else { "enabled" };
 
@@ -1247,4 +1271,56 @@ pub(crate) fn create_buffered_sse_stream(
         },
     )
     .flatten()
+}
+
+#[cfg(test)]
+mod opus_5_tests {
+    use super::*;
+
+    fn request(model: &str, thinking: Option<serde_json::Value>) -> MessagesRequest {
+        let mut value = serde_json::json!({
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        if let Some(thinking) = thinking {
+            value["thinking"] = thinking;
+        }
+        serde_json::from_value(value).expect("valid messages request")
+    }
+
+    #[test]
+    fn opus_5_defaults_to_thinking_response_parsing() {
+        let payload = request("claude-opus-5", None);
+        assert!(model_uses_default_thinking(&payload.model));
+        assert!(should_parse_thinking(
+            &payload.model,
+            payload.thinking.as_ref()
+        ));
+    }
+
+    #[test]
+    fn opus_5_enabled_thinking_is_normalized_to_adaptive() {
+        let mut payload = request(
+            "claude-opus-5",
+            Some(serde_json::json!({"type": "enabled", "budget_tokens": 8192})),
+        );
+
+        normalize_thinking_for_model(&mut payload);
+
+        let thinking = payload.thinking.expect("thinking config");
+        assert_eq!(thinking.thinking_type, "adaptive");
+        assert_eq!(payload.output_config.expect("output config").effort, "high");
+    }
+
+    #[test]
+    fn opus_5_thinking_alias_uses_adaptive_thinking() {
+        let mut payload = request("claude-opus-5-thinking", None);
+
+        override_thinking_from_model_name(&mut payload);
+
+        let thinking = payload.thinking.expect("thinking config");
+        assert_eq!(thinking.thinking_type, "adaptive");
+        assert_eq!(payload.output_config.expect("output config").effort, "high");
+    }
 }

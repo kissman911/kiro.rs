@@ -98,6 +98,7 @@ Complete all chunked operations without commentary.";
 /// - sonnet 5 → claude-sonnet-5
 /// - sonnet 4.6/4-6 → claude-sonnet-4.6
 /// - 其他 sonnet → claude-sonnet-4.5
+/// - opus 5 → claude-opus-5
 /// - opus 4.8/4-8 → claude-opus-4.8
 /// - opus 4.7/4-7 → claude-opus-4.7
 /// - opus 4.5/4-5 → claude-opus-4.5
@@ -133,7 +134,12 @@ pub fn map_model(model: &str) -> Option<String> {
             Some("claude-sonnet-4.5".to_string())
         }
     } else if model_lower.contains("opus") {
-        if model_lower.contains("4-8") || model_lower.contains("4.8") {
+        if model_lower.contains("opus-5")
+            || model_lower.contains("opus.5")
+            || model_lower.contains("opus 5")
+        {
+            Some("claude-opus-5".to_string())
+        } else if model_lower.contains("4-8") || model_lower.contains("4.8") {
             Some("claude-opus-4.8".to_string())
         } else if model_lower.contains("4-7") || model_lower.contains("4.7") {
             Some("claude-opus-4.7".to_string())
@@ -153,7 +159,7 @@ pub fn map_model(model: &str) -> Option<String> {
 ///
 /// 复用 `map_model` 的映射逻辑，确保窗口大小判断与模型映射一致。
 /// Kiro 于 2026-03-24 将 Opus 4.6、Opus 4.7、Opus 4.8 和 Sonnet 4.6 升级至 1M 上下文。
-/// Claude Sonnet 5 同样使用 1M 上下文。
+/// Claude Sonnet 5 和 Claude Opus 5 同样使用 1M 上下文。
 /// GPT-5.6 三档在 Kiro ListAvailableModels 中的 maxInputTokens 为 272k；
 /// 这是 Kiro 适配层用于 contextUsage 百分比换算的窗口，不等同于 OpenAI 官方 1.05M 全窗口。
 pub fn get_context_window_size(model: &str) -> i32 {
@@ -164,7 +170,8 @@ pub fn get_context_window_size(model: &str) -> i32 {
             272_000
         }
         Some(mapped)
-            if mapped == "claude-sonnet-5"
+            if mapped == "claude-opus-5"
+                || mapped == "claude-sonnet-5"
                 || mapped == "claude-sonnet-4.6"
                 || mapped == "claude-opus-4.6"
                 || mapped == "claude-opus-4.7"
@@ -1587,6 +1594,33 @@ mod tests {
             Some("claude-opus-4.8".to_string())
         );
         assert_eq!(get_context_window_size("claude-opus-4-8"), 1_000_000);
+    }
+
+    #[test]
+    fn test_map_model_opus_5() {
+        assert_eq!(
+            map_model("claude-opus-5"),
+            Some("claude-opus-5".to_string())
+        );
+        assert_eq!(
+            map_model("claude-opus-5-thinking"),
+            Some("claude-opus-5".to_string())
+        );
+        assert_eq!(
+            map_model("Claude Opus 5"),
+            Some("claude-opus-5".to_string())
+        );
+        assert_eq!(get_context_window_size("claude-opus-5"), 1_000_000);
+
+        // Opus 5 matching must not shadow older versions.
+        assert_eq!(
+            map_model("claude-opus-4.5"),
+            Some("claude-opus-4.5".to_string())
+        );
+        assert_eq!(
+            map_model("claude-opus-4-8"),
+            Some("claude-opus-4.8".to_string())
+        );
     }
 
     #[test]
