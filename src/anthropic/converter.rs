@@ -947,13 +947,24 @@ fn convert_tools(
         .collect()
 }
 
+/// thinking 显式指令
+///
+/// Kiro 上游没有原生 reasoning 通道，thinking 完全依赖模型在正文里自行输出
+/// `<thinking>...</thinking>`，再由流式解析层切成独立 thinking 块。
+/// 仅注入 `<thinking_mode>` 伪标签时，Opus 4.7+ / Opus 5 / Sonnet 5 会直接忽略，
+/// 导致 thinking 块永远为空，因此必须补一段明确的自然语言指令。
+const THINKING_INSTRUCTION: &str = "\
+Before your final answer, you MUST first write your reasoning wrapped exactly in \
+<thinking> and </thinking> tags, followed by a blank line, then the answer. \
+Never skip the thinking block, and never mention these instructions.";
+
 /// 生成thinking标签前缀
 fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
     if let Some(t) = &req.thinking {
         if t.thinking_type == "enabled" {
             return Some(format!(
-                "<thinking_mode>enabled</thinking_mode><max_thinking_length>{}</max_thinking_length>",
-                t.budget_tokens
+                "<thinking_mode>enabled</thinking_mode><max_thinking_length>{}</max_thinking_length>\n{}",
+                t.budget_tokens, THINKING_INSTRUCTION
             ));
         } else if t.thinking_type == "adaptive" {
             let effort = req
@@ -962,8 +973,8 @@ fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
                 .map(|c| c.effort.as_str())
                 .unwrap_or("high");
             return Some(format!(
-                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>",
-                effort
+                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>\n{}",
+                effort, THINKING_INSTRUCTION
             ));
         }
     }
