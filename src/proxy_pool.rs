@@ -65,6 +65,100 @@ impl std::fmt::Display for PoolError {
 
 impl std::error::Error for PoolError {}
 
+/// 批量导入单行解析结果
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedProxyLine {
+    pub url: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub label: Option<String>,
+}
+
+/// 解析批量导入的一行，支持两种格式：
+///
+/// 1. 空格分隔（原格式）：`url [username] [password] [label...]`
+///    例：`socks5://1.2.3.4:1080 user pass 美国静态`
+/// 2. 冒号分隔（代理商常见导出格式）：`host:port:username:password`
+///    例：`63.246.151.171:5502:kmkmhuyw:3d1it5o1kxnu`
+///    无协议前缀时补 `socks5://`（实测该类代理 socks5 与 http 均可用，
+///    socks5 支持 UDP 与远端 DNS 解析，作为默认更通用）。
+///
+/// 冒号格式也接受带协议前缀的写法，如 `http://host:port:user:pass`，
+/// 此时保留原协议。仅 `host:port` 两段时视为无认证代理。
+pub fn parse_proxy_line(raw: &str) -> Result<ParsedProxyLine, PoolError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(PoolError::Invalid("代理行不能为空".to_string()));
+    }
+
+    // 含空白字符 → 按原有空格分隔格式解析
+    if trimmed.split_whitespace().count() > 1 {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        return Ok(ParsedProxyLine {
+            url: parts[0].to_string(),
+            username: parts.get(1).map(|s| s.to_string()),
+            password: parts.get(2).map(|s| s.to_string()),
+            label: if parts.len() > 3 {
+                Some(parts[3..].join(" "))
+            } else {
+                None
+            },
+        });
+    }
+
+    // 拆出协议前缀（如有），剩余部分按冒号分段
+    let (scheme, rest) = match trimmed.split_once("://") {
+        Some((s, r)) => (Some(s.to_ascii_lowercase()), r),
+        None => (None, trimmed),
+    };
+
+    let segments: Vec<&str> = rest.split(':').collect();
+    match segments.len() {
+        // host:port —— 无认证
+        2 => Ok(ParsedProxyLine {
+            url: format!(
+                "{}://{}:{}",
+                scheme.as_deref().unwrap_or("socks5"),
+                segments[0],
+                segments[1]
+            ),
+            username: None,
+            password: None,
+            label: None,
+        }),
+        // host:port:username:password
+        4 => {
+            if segments[2].is_empty() || segments[3].is_empty() {
+                return Err(PoolError::Invalid(
+                    "host:port:username:password 格式中用户名与密码不能为空".to_string(),
+                ));
+            }
+            Ok(ParsedProxyLine {
+                url: format!(
+                    "{}://{}:{}",
+                    scheme.as_deref().unwrap_or("socks5"),
+                    segments[0],
+                    segments[1]
+                ),
+                username: Some(segments[2].to_string()),
+                password: Some(segments[3].to_string()),
+                label: None,
+            })
+        }
+        // 单段：可能是 http://host（依赖默认端口），交给 URL 校验判定
+        1 => Ok(ParsedProxyLine {
+            url: trimmed.to_string(),
+            username: None,
+            password: None,
+            label: None,
+        }),
+        n => Err(PoolError::Invalid(format!(
+            "无法识别的代理格式（冒号分段数 {}）。支持 host:port、host:port:user:pass，或空格分隔的 url user pass",
+            n
+        ))),
+    }
+}
+
 /// 校验代理 URL：scheme 必须是 http/https/socks5/socks5h，且含 host + port。
 pub fn validate_proxy_url(raw: &str) -> Result<(), PoolError> {
     let s = raw.trim();
@@ -539,7 +633,10 @@ impl ProxyPool {
         Ok(entry)
     }
 
-    /// 批量添加：每行 `url [username] [password] [label...]`。
+    /// 批量添加，每行支持两种格式：
+    /// - `url [username] [password] [label...]`（空格分隔）
+    /// - `host:port:username:password` 或 `host:port`（代理商常见导出格式，缺协议时补 socks5）
+    ///
     /// 逐行校验，非法行进入 errors，不阻断其它行。
     pub fn batch_add(&self, lines: &[String]) -> BatchAddResult {
         let mut added = Vec::new();
@@ -550,16 +647,18 @@ impl ProxyPool {
             if trimmed.is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            let url = parts[0].to_string();
-            let username = parts.get(1).map(|s| s.to_string());
-            let password = parts.get(2).map(|s| s.to_string());
-            let label = if parts.len() > 3 {
-                Some(parts[3..].join(" "))
-            } else {
-                None
+            let parsed = match parse_proxy_line(trimmed) {
+                Ok(p) => p,
+                Err(e) => {
+                    errors.push(BatchAddError {
+                        line: lineno,
+                        content: trimmed.to_string(),
+                        error: e.to_string(),
+                    });
+                    continue;
+                }
             };
-            match self.add(url, username, password, label) {
+            match self.add(parsed.url, parsed.username, parsed.password, parsed.label) {
                 Ok(e) => added.push(e),
                 Err(e) => errors.push(BatchAddError {
                     line: lineno,
@@ -927,6 +1026,88 @@ mod tests {
 
     fn add(p: &ProxyPool, url: &str) -> ProxyEntry {
         p.add(url.into(), None, None, None).expect("add ok")
+    }
+
+    #[test]
+    fn test_parse_proxy_line_colon_host_port_user_pass() {
+        let parsed = parse_proxy_line("63.246.151.171:5502:kmkmhuyw:3d1it5o1kxnu").unwrap();
+        assert_eq!(parsed.url, "socks5://63.246.151.171:5502");
+        assert_eq!(parsed.username.as_deref(), Some("kmkmhuyw"));
+        assert_eq!(parsed.password.as_deref(), Some("3d1it5o1kxnu"));
+        assert!(parsed.label.is_none());
+        assert!(validate_proxy_url(&parsed.url).is_ok());
+    }
+
+    #[test]
+    fn test_parse_proxy_line_colon_host_port_only() {
+        let parsed = parse_proxy_line("107.180.180.233:5282").unwrap();
+        assert_eq!(parsed.url, "socks5://107.180.180.233:5282");
+        assert!(parsed.username.is_none());
+        assert!(parsed.password.is_none());
+    }
+
+    /// 冒号格式带显式协议前缀时应保留原协议，不被 socks5 覆盖。
+    #[test]
+    fn test_parse_proxy_line_colon_keeps_explicit_scheme() {
+        let parsed = parse_proxy_line("http://1.2.3.4:8080:user:pass").unwrap();
+        assert_eq!(parsed.url, "http://1.2.3.4:8080");
+        assert_eq!(parsed.username.as_deref(), Some("user"));
+        assert_eq!(parsed.password.as_deref(), Some("pass"));
+    }
+
+    /// 空格分隔的原格式不能因新增冒号格式而回退。
+    #[test]
+    fn test_parse_proxy_line_whitespace_format_still_works() {
+        let parsed = parse_proxy_line("socks5://1.2.3.4:1080 user pass 美国 静态").unwrap();
+        assert_eq!(parsed.url, "socks5://1.2.3.4:1080");
+        assert_eq!(parsed.username.as_deref(), Some("user"));
+        assert_eq!(parsed.password.as_deref(), Some("pass"));
+        assert_eq!(parsed.label.as_deref(), Some("美国 静态"));
+    }
+
+    #[test]
+    fn test_parse_proxy_line_rejects_bad_shapes() {
+        // 用户名/密码为空
+        assert!(parse_proxy_line("1.2.3.4:1080::pass").is_err());
+        assert!(parse_proxy_line("1.2.3.4:1080:user:").is_err());
+        // 分段数不可识别
+        assert!(parse_proxy_line("1.2.3.4:1080:user").is_err());
+        assert!(parse_proxy_line("a:b:c:d:e").is_err());
+        assert!(parse_proxy_line("   ").is_err());
+    }
+
+    /// 真实代理商导出格式的批量导入。
+    #[test]
+    fn test_batch_add_colon_format() {
+        let p = pool();
+        let lines: Vec<String> = vec![
+            "63.246.151.171:5502:kmkmhuyw:3d1it5o1kxnu".to_string(),
+            "107.180.180.233:5282:kmkmhuyw:3d1it5o1kxnu".to_string(),
+            "".to_string(),
+            "9.142.33.139:7310:kmkmhuyw:3d1it5o1kxnu".to_string(),
+        ];
+        let result = p.batch_add(&lines);
+        assert_eq!(result.added.len(), 3, "errors: {:?}", result.errors);
+        assert!(result.errors.is_empty());
+        assert_eq!(result.added[0].url, "socks5://63.246.151.171:5502");
+        assert_eq!(result.added[0].username.as_deref(), Some("kmkmhuyw"));
+        assert!(result.added.iter().all(|e| e.is_free()));
+    }
+
+    /// 两种格式混在同一次导入里，并且非法行不阻断其它行。
+    #[test]
+    fn test_batch_add_mixed_formats_and_partial_failure() {
+        let p = pool();
+        let lines: Vec<String> = vec![
+            "63.246.151.171:5502:kmkmhuyw:3d1it5o1kxnu".to_string(),
+            "socks5://5.6.7.8:1080 u pw 备注".to_string(),
+            "1.2.3.4:1080:user".to_string(),
+            "192.168.1.1:8080:user:pass".to_string(),
+        ];
+        let result = p.batch_add(&lines);
+        assert_eq!(result.added.len(), 3, "errors: {:?}", result.errors);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].line, 3);
     }
 
     #[test]

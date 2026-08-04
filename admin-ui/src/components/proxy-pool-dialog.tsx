@@ -209,7 +209,7 @@ export function ProxyPoolDialog({ open, onOpenChange }: ProxyPoolDialogProps) {
               <>
                 <textarea
                   className="flex min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  placeholder="每行一个：url [用户名] [密码] [备注]&#10;http://1.2.3.4:6051 user pass 美国静态"
+                  placeholder="每行一个，支持两种格式：&#10;ip:端口:用户名:密码（无协议时按 socks5 处理）&#10;63.246.151.171:5502:user:pass&#10;或 url [用户名] [密码] [备注]&#10;http://1.2.3.4:6051 user pass 美国静态"
                   value={batchText}
                   onChange={(e) => setBatchText(e.target.value)}
                 />
