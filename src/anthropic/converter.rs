@@ -958,27 +958,93 @@ Before your final answer, you MUST first write your reasoning wrapped exactly in
 <thinking> and </thinking> tags, followed by a blank line, then the answer. \
 Never skip the thinking block, and never mention these instructions.";
 
+/// 用于判断系统消息中是否已存在 thinking 显式指令，避免重复注入。
+const THINKING_INSTRUCTION_MARKER: &str = "wrapped exactly in <thinking>";
+
+/// 判断模型是否默认输出 adaptive thinking
+///
+/// Opus 5 / Sonnet 5 即使请求未携带 `thinking` 字段，响应侧也会按 thinking 解析
+/// （见 `handlers::should_parse_thinking`）。请求侧必须用同一判断注入指令，
+/// 否则会出现「响应侧解析 thinking、请求侧没让模型输出」的空块。
+pub(crate) fn model_uses_default_thinking(model: &str) -> bool {
+    let model_lower = model.to_lowercase();
+    model_lower.contains("opus-5")
+        || model_lower.contains("opus.5")
+        || model_lower.contains("opus 5")
+        || model_lower.contains("sonnet-5")
+        || model_lower.contains("sonnet.5")
+        || model_lower.contains("sonnet 5")
+}
+
+/// thinking 注入内容
+///
+/// 伪标签与自然语言指令分开保存：伪标签在客户端已自带时需要去重，
+/// 而指令必须始终注入，否则修复会在「客户端自带 `<thinking_mode>`」这一
+/// 最常见路径（Claude Code / OpenClaw）上被静默跳过。
+pub(crate) struct ThinkingPrefix {
+    /// `<thinking_mode>` 等伪标签
+    tags: String,
+    /// 自然语言指令；与结构化输出冲突时为 None
+    instruction: Option<&'static str>,
+}
+
 /// 生成thinking标签前缀
-fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
-    if let Some(t) = &req.thinking {
-        if t.thinking_type == "enabled" {
-            return Some(format!(
-                "<thinking_mode>enabled</thinking_mode><max_thinking_length>{}</max_thinking_length>\n{}",
-                t.budget_tokens, THINKING_INSTRUCTION
-            ));
-        } else if t.thinking_type == "adaptive" {
-            let effort = req
-                .output_config
-                .as_ref()
-                .map(|c| c.effort.as_str())
-                .unwrap_or("high");
-            return Some(format!(
-                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>\n{}",
-                effort, THINKING_INSTRUCTION
-            ));
+fn generate_thinking_prefix(req: &MessagesRequest) -> Option<ThinkingPrefix> {
+    // 指令与「只返回 JSON、前后不得有散文」的结构化输出要求语义冲突，此时不注入。
+    let instruction = if structured_output_policy(req).is_some() {
+        None
+    } else {
+        Some(THINKING_INSTRUCTION)
+    };
+
+    let effort = || {
+        req.output_config
+            .as_ref()
+            .map(|c| c.effort.as_str())
+            .unwrap_or("high")
+            .to_string()
+    };
+
+    match req.thinking.as_ref().map(|t| t.thinking_type.as_str()) {
+        Some("enabled") => {
+            let budget = req.thinking.as_ref().map(|t| t.budget_tokens).unwrap_or(0);
+            Some(ThinkingPrefix {
+                tags: format!(
+                    "<thinking_mode>enabled</thinking_mode><max_thinking_length>{}</max_thinking_length>",
+                    budget
+                ),
+                instruction,
+            })
+        }
+        Some("adaptive") => Some(ThinkingPrefix {
+            tags: format!(
+                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>",
+                effort()
+            ),
+            instruction,
+        }),
+        // 未携带 thinking 字段，但模型默认输出 thinking：补一份 adaptive 注入，
+        // 与 handlers::should_parse_thinking 的判断保持一致。
+        None if model_uses_default_thinking(&req.model) => Some(ThinkingPrefix {
+            tags: format!(
+                "<thinking_mode>adaptive</thinking_mode><thinking_effort>{}</thinking_effort>",
+                effort()
+            ),
+            instruction,
+        }),
+        _ => None,
+    }
+}
+
+/// 把 thinking 指令追加到系统消息末尾（已存在则跳过）
+fn append_thinking_instruction(mut content: String, instruction: Option<&str>) -> String {
+    if let Some(instruction) = instruction {
+        if !content.contains(THINKING_INSTRUCTION_MARKER) {
+            content.push('\n');
+            content.push_str(instruction);
         }
     }
-    None
+    content
 }
 
 fn plain_text_content(value: &serde_json::Value) -> String {
@@ -1088,13 +1154,17 @@ fn build_history(
             // 追加分块写入策略到系统消息
             let system_content = format!("{}\n{}", system_content, SYSTEM_CHUNKED_POLICY);
 
-            // 注入thinking标签到系统消息最前面（如果需要且不存在）
+            // 注入 thinking 前缀。
+            // 伪标签需要去重（客户端如 Claude Code / OpenClaw 会自带 `<thinking_mode>`），
+            // 但自然语言指令必须始终注入 —— 否则伪标签命中去重时，指令会被一起丢掉，
+            // 修复在最常见路径上静默失效。
             let final_content = if let Some(ref prefix) = thinking_prefix {
-                if !has_thinking_tags(&system_content) {
-                    format!("{}\n{}", prefix, system_content)
-                } else {
+                let with_tags = if has_thinking_tags(&system_content) {
                     system_content
-                }
+                } else {
+                    format!("{}\n{}", prefix.tags, system_content)
+                };
+                append_thinking_instruction(with_tags, prefix.instruction)
             } else {
                 system_content
             };
@@ -1108,7 +1178,9 @@ fn build_history(
         }
     } else if let Some(ref prefix) = thinking_prefix {
         // 没有系统消息但有thinking配置，插入新的系统消息
-        let mut system_content = append_structured_output_policy(prefix.clone(), req);
+        let mut system_content =
+            append_thinking_instruction(prefix.tags.clone(), prefix.instruction);
+        system_content = append_structured_output_policy(system_content, req);
         if let Some(policy) = heuristic_structured_output_policy(req, messages) {
             system_content.push('\n');
             system_content.push_str(&policy);
@@ -1339,6 +1411,145 @@ fn merge_assistant_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 构造最小可用请求，便于逐个测试 thinking 注入分支
+    fn thinking_req(
+        model: &str,
+        thinking_type: Option<&str>,
+        system: Option<&str>,
+    ) -> MessagesRequest {
+        MessagesRequest {
+            model: model.to_string(),
+            max_tokens: 1024,
+            messages: vec![super::super::types::Message {
+                role: "user".to_string(),
+                content: serde_json::json!("hi"),
+            }],
+            stream: true,
+            system: system.map(|text| {
+                vec![super::super::types::SystemMessage {
+                    text: text.to_string(),
+                }]
+            }),
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            thinking: thinking_type.map(|t| super::super::types::Thinking {
+                thinking_type: t.to_string(),
+                budget_tokens: 8192,
+            }),
+            output_config: None,
+            effort: None,
+            metadata: None,
+        }
+    }
+
+    /// 取出注入到历史里的系统消息文本
+    fn injected_system_text(req: &MessagesRequest) -> String {
+        let mut map = HashMap::new();
+        let history = build_history(req, &req.messages, "claude-opus-5", &mut map).unwrap();
+        match history.first() {
+            Some(Message::User(u)) => u.user_input_message.content.clone(),
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn test_thinking_prefix_contains_instruction_for_both_modes() {
+        for mode in ["enabled", "adaptive"] {
+            let req = thinking_req("claude-opus-4-8", Some(mode), None);
+            let prefix = generate_thinking_prefix(&req)
+                .unwrap_or_else(|| panic!("{mode} 模式应生成 thinking 前缀"));
+            assert_eq!(
+                prefix.instruction,
+                Some(THINKING_INSTRUCTION),
+                "{mode} 模式必须携带自然语言指令"
+            );
+            assert!(prefix.tags.contains("<thinking_mode>"));
+        }
+    }
+
+    /// 回归：客户端 system 已含 `<thinking_mode>` 伪标签时（Claude Code / OpenClaw 的真实行为），
+    /// 伪标签去重不得把自然语言指令一起丢掉，否则修复在最常见路径上静默失效。
+    #[test]
+    fn test_instruction_injected_even_when_client_system_has_thinking_tags() {
+        let req = thinking_req(
+            "claude-opus-5",
+            Some("adaptive"),
+            Some("<thinking_mode>adaptive</thinking_mode>\nYou are a coding assistant."),
+        );
+        let text = injected_system_text(&req);
+
+        assert!(
+            text.contains(THINKING_INSTRUCTION_MARKER),
+            "system 已含伪标签时仍必须注入 thinking 指令，实际内容: {text}"
+        );
+        assert_eq!(
+            text.matches("<thinking_mode>").count(),
+            1,
+            "伪标签不应重复注入"
+        );
+    }
+
+    /// Opus 5 / Sonnet 5 不带 thinking 字段时响应侧仍会解析 thinking 块，
+    /// 请求侧必须用同一判断注入指令，否则必然产生空 thinking 块。
+    #[test]
+    fn test_default_thinking_model_without_thinking_field_gets_instruction() {
+        for model in ["claude-opus-5", "claude-sonnet-5"] {
+            let req = thinking_req(model, None, None);
+            let prefix = generate_thinking_prefix(&req)
+                .unwrap_or_else(|| panic!("{model} 默认 thinking 应生成前缀"));
+            assert_eq!(prefix.instruction, Some(THINKING_INSTRUCTION));
+            assert!(prefix.tags.contains("adaptive"));
+        }
+    }
+
+    #[test]
+    fn test_non_default_thinking_model_without_thinking_field_gets_no_prefix() {
+        let req = thinking_req("claude-opus-4-8", None, None);
+        assert!(
+            generate_thinking_prefix(&req).is_none(),
+            "未请求 thinking 且模型无默认 thinking 时不应注入"
+        );
+    }
+
+    #[test]
+    fn test_instruction_injected_once_when_no_system_message() {
+        let req = thinking_req("claude-opus-5", Some("adaptive"), None);
+        let text = injected_system_text(&req);
+        assert_eq!(
+            text.matches(THINKING_INSTRUCTION_MARKER).count(),
+            1,
+            "无 system 消息路径应恰好注入一次指令，实际内容: {text}"
+        );
+    }
+
+    /// 结构化输出要求「JSON 前后不得有散文」，与 thinking 指令语义冲突，需抑制指令。
+    #[test]
+    fn test_structured_output_suppresses_thinking_instruction() {
+        let mut req = thinking_req("claude-opus-5", Some("adaptive"), None);
+        req.response_format = Some(serde_json::json!({"type": "json_object"}));
+
+        let prefix = generate_thinking_prefix(&req).expect("仍应生成伪标签前缀");
+        assert!(
+            prefix.instruction.is_none(),
+            "结构化输出场景必须抑制 thinking 指令"
+        );
+
+        let text = injected_system_text(&req);
+        assert!(!text.contains(THINKING_INSTRUCTION_MARKER));
+        assert!(text.contains("valid JSON object"));
+    }
+
+    #[test]
+    fn test_model_uses_default_thinking_matches_expected_models() {
+        for model in ["claude-opus-5", "claude-opus-5-thinking", "claude-sonnet-5"] {
+            assert!(model_uses_default_thinking(model), "{model} 应命中");
+        }
+        for model in ["claude-opus-4-8", "claude-sonnet-4-6", "gpt-5.6-sol"] {
+            assert!(!model_uses_default_thinking(model), "{model} 不应命中");
+        }
+    }
 
     #[test]
     fn test_map_model_sonnet() {

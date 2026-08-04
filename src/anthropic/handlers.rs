@@ -881,14 +881,12 @@ pub(crate) async fn handle_non_stream_request(
     .await
 }
 
+/// 判断模型是否默认输出 adaptive thinking
+///
+/// 单一数据源在 `converter`：请求侧的 thinking 指令注入与响应侧的 thinking 解析
+/// 必须用同一判断，否则会出现空 thinking 块。
 fn model_uses_default_thinking(model: &str) -> bool {
-    let model_lower = model.to_lowercase();
-    model_lower.contains("opus-5")
-        || model_lower.contains("opus.5")
-        || model_lower.contains("opus 5")
-        || model_lower.contains("sonnet-5")
-        || model_lower.contains("sonnet.5")
-        || model_lower.contains("sonnet 5")
+    super::converter::model_uses_default_thinking(model)
 }
 
 fn normalize_thinking_for_model(payload: &mut MessagesRequest) {
