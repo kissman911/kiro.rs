@@ -80,6 +80,7 @@ fn build_request_body_and_plan(
     let kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: None,
+        additional_model_request_fields: conversion_result.additional_model_request_fields,
     };
 
     let identity = RequestIdentity {

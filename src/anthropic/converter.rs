@@ -190,6 +190,10 @@ pub struct ConversionResult {
     pub conversation_state: ConversationState,
     /// 工具名称映射（短名称 → 原始名称），仅当存在超长工具名时非空
     pub tool_name_map: HashMap<String, String>,
+    /// 真实 Kiro wire 字段（additionalModelRequestFields.output_config.effort），从客户端
+    /// 请求的 output_config/effort/budget_tokens 推导。为空时不下发。
+    pub additional_model_request_fields:
+        Option<crate::kiro::model::requests::kiro::AdditionalModelRequestFields>,
 }
 
 pub struct RequestIdentityData {
@@ -431,9 +435,214 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
         tracing::info!("工具名称映射: {} 个超长名称已缩短", tool_name_map.len());
     }
 
+    let additional_model_request_fields = build_additional_model_request_fields(req, &model_id);
+
     Ok(ConversionResult {
         conversation_state,
         tool_name_map,
+        additional_model_request_fields,
+    })
+}
+
+/// 由 Anthropic `thinking.budget_tokens` 推导 effort 档位。
+///
+/// 当客户端只发标准 `thinking:{type:"enabled",budget_tokens:N}`、不带 `output_config` 时，
+/// 用它把“思考预算”映射到 Kiro 的 effort。
+fn effort_from_budget_tokens(tokens: i32) -> &'static str {
+    match tokens {
+        i32::MIN..=4_000 => "low",
+        4_001..=16_000 => "medium",
+        16_001..=64_000 => "high",
+        _ => "xhigh",
+    }
+}
+
+/// effort 档位枚举（带容错解析）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffortTier {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl EffortTier {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "x-high" | "x_high" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// 选定最终下发的 effort：优先显式 `output_config.effort` / `effort.level`；
+/// 否则据 `budget_tokens` 推导；再统一过 `normalize_effort_for_model`（按模型将 xhigh 安全降级）。
+fn select_native_reasoning_effort(req: &MessagesRequest, model_id: &str) -> String {
+    let raw = req
+        .output_config
+        .as_ref()
+        .map(|oc| oc.effort.trim().to_string())
+        .filter(|e| !e.is_empty())
+        .or_else(|| {
+            req.effort
+                .as_ref()
+                .map(|e| e.level.trim().to_string())
+                .filter(|e| !e.is_empty())
+        })
+        .or_else(|| {
+            req.thinking
+                .as_ref()
+                .filter(|t| t.is_enabled())
+                .map(|t| effort_from_budget_tokens(t.budget_tokens).to_string())
+        })
+        .unwrap_or_else(|| "high".to_string());
+    normalize_effort_for_model(model_id, &raw).unwrap_or_else(|| "high".to_string())
+}
+
+/// 按模型归一化 effort：不认识的回退 high；xhigh 仅新型号支持，否则降到 high。
+fn normalize_effort_for_model(model_id: &str, raw_effort: &str) -> Option<String> {
+    let trimmed = raw_effort.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let requested = match EffortTier::parse(trimmed) {
+        Some(tier) => tier,
+        None => {
+            tracing::debug!(
+                model_id = %model_id,
+                effort = %trimmed,
+                fallback_effort = EffortTier::High.as_str(),
+                "不支持的 effort 回退 high"
+            );
+            return Some(EffortTier::High.as_str().to_string());
+        }
+    };
+
+    // xhigh 是新档位，老型号会以 `Invalid additionalModelRequestFields` 拒绝，故降到最近的低档。
+    let normalized = if requested == EffortTier::XHigh && !model_supports_xhigh_effort(model_id) {
+        EffortTier::High
+    } else {
+        requested
+    };
+    if normalized != requested || normalized.as_str() != trimmed {
+        tracing::debug!(
+            model_id = %model_id,
+            effort = %trimmed,
+            normalized_effort = normalized.as_str(),
+            "归一化 output_config.effort"
+        );
+    }
+
+    Some(normalized.as_str().to_string())
+}
+
+/// 模型是否支持 xhigh effort。
+fn model_supports_xhigh_effort(model_id: &str) -> bool {
+    let model = model_id.to_ascii_lowercase();
+    if model.contains("opus-4.7")
+        || model.contains("opus-4.8")
+        || model.contains("fable-5")
+        || model.contains("mythos-5")
+        || model.contains("claude-5")
+    {
+        return true;
+    }
+    // 早于 xhigh 的已知型号（紧凑 deny-list）。
+    !matches!(
+        model.as_str(),
+        "claude-opus-4.6"
+            | "claude-sonnet-4.6"
+            | "claude-opus-4.5"
+            | "claude-sonnet-4.5"
+            | "claude-haiku-4.5"
+    )
+}
+
+/// 模型是否接受原生 output_config（additionalModelRequestFields）。
+///
+/// Kiro `ListAvailableModels`（2026-06）确认：Opus 4.6/4.7/4.8、Sonnet 4.6 接受。
+/// Claude 5 系（fable-5 / mythos-5 / sonnet-5 / opus-5 / claude-5）一并视为支持。
+/// 其余保守视为不支持——下发会触发上游 400。若后续实测某模型 400，从这里去除即可。
+fn model_supports_native_reasoning(model_id: &str) -> bool {
+    let m = model_id.to_ascii_lowercase();
+    matches!(
+        m.as_str(),
+        "claude-opus-4.6" | "claude-opus-4.7" | "claude-opus-4.8" | "claude-sonnet-4.6"
+    ) || m.contains("fable-5")
+        || m.contains("mythos-5")
+        || m.contains("sonnet-5")
+        || m.contains("opus-5")
+        || m.contains("claude-5")
+}
+
+/// 本次请求是否请求了原生 reasoning。
+///
+/// Opus 4.6 有历史约束：上游只在 **adaptive** thinking 下接受 output_config
+/// （普通 enabled / 纯 effort 会 400），故单独判定。
+fn native_reasoning_requested(req: &MessagesRequest, model_id: &str) -> bool {
+    if model_id == "claude-opus-4.6" {
+        return req
+            .thinking
+            .as_ref()
+            .is_some_and(|t| t.thinking_type == "adaptive");
+    }
+    req.thinking.as_ref().is_some_and(|t| t.is_enabled())
+        || req
+            .output_config
+            .as_ref()
+            .is_some_and(|oc| !oc.effort.trim().is_empty())
+        || req
+            .effort
+            .as_ref()
+            .is_some_and(|e| !e.level.trim().is_empty())
+}
+
+/// 组装真实 Kiro wire 字段 additionalModelRequestFields.output_config.effort。
+fn build_additional_model_request_fields(
+    req: &MessagesRequest,
+    model_id: &str,
+) -> Option<crate::kiro::model::requests::kiro::AdditionalModelRequestFields> {
+    use crate::kiro::model::requests::kiro::{AdditionalModelRequestFields, KiroOutputConfig};
+
+    // 显式关闭 thinking：不下发任何 reasoning 字段。
+    if req
+        .thinking
+        .as_ref()
+        .is_some_and(|t| t.thinking_type == "disabled")
+    {
+        return None;
+    }
+
+    // 仅对确认接受 output_config 的模型下发，避免上游 400。
+    if !model_supports_native_reasoning(model_id) {
+        return None;
+    }
+
+    // 需要客户端确实请求了 reasoning。
+    if !native_reasoning_requested(req, model_id) {
+        return None;
+    }
+
+    let effort = select_native_reasoning_effort(req, model_id);
+    tracing::info!(model_id = %model_id, effort = %effort, "下发原生 output_config.effort");
+    Some(AdditionalModelRequestFields {
+        output_config: Some(KiroOutputConfig { effort }),
     })
 }
 

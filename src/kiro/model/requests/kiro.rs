@@ -35,6 +35,40 @@ pub struct KiroRequest {
     /// Profile ARN（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_arn: Option<String>,
+    /// 真实 Kiro CLI wire 字段，携带 output_config.effort 等控制开关。
+    ///
+    /// 真实拓包样例（抓自 Kiro CLI 流量）：
+    /// ```json
+    /// "additionalModelRequestFields": {
+    ///     "output_config": { "effort": "max" }
+    /// }
+    /// ```
+    /// effort 档位与模型相关：老 4.5/4.6 接受 low/medium/high/max；
+    /// 新型号可能额外接受 xhigh。与 XML 伪协议不同，这是真正生效的协议字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub additional_model_request_fields: Option<AdditionalModelRequestFields>,
+}
+
+/// AWS Q CodeWhisperer `additionalModelRequestFields` 顶层容器。
+///
+/// 注意：真实 wire 格式中，内层 `output_config` 是 snake_case，
+/// 与外层 `additionalModelRequestFields`（camelCase）不同，
+/// 所以这个结构 **不能** 继承 `rename_all = "camelCase"`。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdditionalModelRequestFields {
+    /// 输出配置（含 reasoning effort）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<KiroOutputConfig>,
+}
+
+/// AWS Q 后端识别的 effort 控制字段。
+///
+/// 档位与模型相关：老 4.5/4.6 接受 low/medium/high/max；新型号可能接受 xhigh。
+/// 阶梯实验：同一 prompt 从 low 到 max，响应时间与输出长度相差约 5 倍，
+/// 证明这是真正生效的协议字段，而非往 system prompt 塞 `<thinking_effort>` 的伪协议。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KiroOutputConfig {
+    pub effort: String,
 }
 #[cfg(test)]
 mod tests {
