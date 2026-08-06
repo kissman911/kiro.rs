@@ -687,17 +687,28 @@ impl StreamContext {
             return Vec::new();
         }
 
+        let mut events = Vec::new();
+        // native reasoningContentEvent 开启的 thinking 块，在正文到达时先关闭并补签名，
+        // 避免 thinking 块被消息结尾的通用清理裸关（丢 signature_delta），
+        // 否则客户端多轮回传时会踩 `content[].thinking must be passed back`。
+        // 仅处理 native 路径（in_thinking_block=false 表示不是 <thinking> 标签流式路径）。
+        if self.is_thinking_block_open() && !self.in_thinking_block {
+            events.extend(self.close_open_thinking_block());
+        }
+
         // 估算 tokens
         self.output_tokens += estimate_tokens(content);
 
         // 如果启用了thinking，需要处理thinking块
         if self.thinking_enabled {
-            return self.process_content_with_thinking(content);
+            events.extend(self.process_content_with_thinking(content));
+            return events;
         }
 
         // 非 thinking 模式同样复用统一的 text_delta 发送逻辑，
         // 以便在 tool_use 自动关闭文本块后能够自愈重建新的文本块，避免“吞字”。
-        self.create_text_delta_events(content)
+        events.extend(self.create_text_delta_events(content));
+        events
     }
 
     /// 处理包含thinking块的内容
