@@ -1,6 +1,6 @@
 [package]
 name = "kiro-rs"
-version = "2026.8.1-native-effort"
+version = "2026.8.2-image-resize"
 edition = "2024"
 
 [features]
@@ -37,3 +37,7 @@ subtle = "2.6"        # 常量时间比较（防止时序攻击）
 rust-embed = "8"      # 嵌入静态文件
 mime_guess = "2"      # MIME 类型推断
 pdf-extract = "0.10.0"
+base64 = "0.22"       # 图片 base64 编解码
+thiserror = "2"       # image_resize 错误类型
+# 入站图片缩放：把大图降采样到 AWS Q 单字段上限内。纯 Rust 无 C 依赖，只开 png/jpeg/webp/gif
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }

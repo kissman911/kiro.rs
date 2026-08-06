@@ -16,6 +16,7 @@ use crate::kiro::model::requests::tool::{
 };
 
 use super::types::{ContentBlock, MessagesRequest};
+use crate::image_resize::{ResizeConfig, maybe_shrink_image};
 
 /// 规范化 JSON Schema，修复 MCP 工具定义中常见的类型问题
 ///
@@ -676,7 +677,14 @@ fn process_message_content(
                         "image" => {
                             if let Some(source) = block.source {
                                 if let Some(format) = get_image_format(&source.media_type) {
-                                    images.push(KiroImage::from_base64(format, source.data));
+                                    // 入站缩图：大图降采样避免 AWS Q 单字段上限 400
+                                    let cfg = ResizeConfig::from_env();
+                                    let processed =
+                                        maybe_shrink_image(cfg, &format, &source.data);
+                                    images.push(KiroImage::from_base64(
+                                        processed.format,
+                                        processed.data_base64,
+                                    ));
                                 }
                             }
                         }
