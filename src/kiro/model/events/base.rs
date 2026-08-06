@@ -16,6 +16,8 @@ pub enum EventType {
     Metering,
     /// 上下文使用率事件
     ContextUsage,
+    /// 推理内容事件（原生 thinking / reasoning）
+    ReasoningContent,
     /// 未知事件类型
     Unknown,
 }
@@ -28,6 +30,7 @@ impl EventType {
             "toolUseEvent" => Self::ToolUse,
             "meteringEvent" => Self::Metering,
             "contextUsageEvent" => Self::ContextUsage,
+            "reasoningContentEvent" => Self::ReasoningContent,
             _ => Self::Unknown,
         }
     }
@@ -39,6 +42,7 @@ impl EventType {
             Self::ToolUse => "toolUseEvent",
             Self::Metering => "meteringEvent",
             Self::ContextUsage => "contextUsageEvent",
+            Self::ReasoningContent => "reasoningContentEvent",
             Self::Unknown => "unknown",
         }
     }
@@ -71,6 +75,8 @@ pub enum Event {
     Metering(()),
     /// 上下文使用率
     ContextUsage(super::ContextUsageEvent),
+    /// 推理内容（原生 thinking / reasoning）
+    ReasoningContent(super::ReasoningContentEvent),
     /// 未知事件 (保留原始帧数据)
     Unknown {},
     /// 服务端错误
@@ -121,8 +127,12 @@ impl Event {
                 let payload = super::ContextUsageEvent::from_frame(&frame)?;
                 Ok(Self::ContextUsage(payload))
             }
+            EventType::ReasoningContent => {
+                let payload = super::ReasoningContentEvent::from_frame(&frame)?;
+                Ok(Self::ReasoningContent(payload))
+            }
             EventType::Unknown => {
-                // 诊断：抓上游未识别的事件类型（如 reasoningContentEvent），确认上游是否真的下发思考事件。
+                // 诊断：抓上游未识别的事件类型，确认上游是否下发新事件。
                 tracing::warn!("未识别的上游事件类型: {}", event_type_str);
                 Ok(Self::Unknown {})
             }

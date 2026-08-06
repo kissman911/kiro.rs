@@ -540,6 +540,8 @@ pub struct StreamContext {
     pub thinking_extracted: bool,
     /// thinking 块索引
     pub thinking_block_index: Option<i32>,
+    /// 上游原生 reasoningContentEvent 下发的 thinking 签名（有则用真的，无则占位）
+    pending_thinking_signature: Option<String>,
     /// 文本块索引（thinking 启用时动态分配）
     pub text_block_index: Option<i32>,
     /// 是否需要剥离 thinking 内容开头的换行符
@@ -569,6 +571,7 @@ impl StreamContext {
             in_thinking_block: false,
             thinking_extracted: false,
             thinking_block_index: None,
+            pending_thinking_signature: None,
             text_block_index: None,
             strip_thinking_leading_newline: false,
         }
@@ -638,6 +641,7 @@ impl StreamContext {
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
             Event::ToolUse(tool_use) => self.process_tool_use(tool_use),
+            Event::ReasoningContent(reasoning) => self.process_reasoning_content(reasoning),
             Event::ContextUsage(context_usage) => {
                 // 从上下文使用百分比计算实际的 input_tokens
                 let window_size = get_context_window_size(&self.model);
@@ -928,6 +932,11 @@ impl StreamContext {
     /// `The content[].thinking in the thinking mode must be passed back to the API`。
     /// 上游不下发原生 signature，故统一用占位值。
     fn create_signature_delta_event(&self, index: i32) -> SseEvent {
+        self.create_signature_delta_event_with(index, THINKING_SIGNATURE_PLACEHOLDER)
+    }
+
+    /// 以指定签名值创建 signature_delta 事件（上游有真签名时用真的）
+    fn create_signature_delta_event_with(&self, index: i32, signature: &str) -> SseEvent {
         SseEvent::new(
             "content_block_delta",
             json!({
@@ -935,10 +944,157 @@ impl StreamContext {
                 "index": index,
                 "delta": {
                     "type": "signature_delta",
-                    "signature": THINKING_SIGNATURE_PLACEHOLDER,
+                    "signature": signature,
                 }
             }),
         )
+    }
+
+    /// 当前 thinking 块是否处于打开状态
+    fn is_thinking_block_open(&self) -> bool {
+        self.thinking_block_index
+            .is_some_and(|idx| self.state_manager.is_block_open_of_type(idx, "thinking"))
+    }
+
+    /// 关闭当前打开的文本块（如有）
+    fn close_open_text_block(&mut self) -> Vec<SseEvent> {
+        let Some(idx) = self.text_block_index else {
+            return Vec::new();
+        };
+        if !self.state_manager.is_block_open_of_type(idx, "text") {
+            self.text_block_index = None;
+            return Vec::new();
+        }
+        self.text_block_index = None;
+        self.state_manager
+            .handle_content_block_stop(idx)
+            .into_iter()
+            .collect()
+    }
+
+    /// 确保 thinking 块已打开（未开则先 flush 文本缓冲、关闭文本块，再开 thinking 块）
+    fn ensure_thinking_block(&mut self) -> Vec<SseEvent> {
+        if self.is_thinking_block_open() {
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+        let buffered = std::mem::take(&mut self.thinking_buffer);
+        if !buffered.trim().is_empty() {
+            events.extend(self.create_text_delta_events(&buffered));
+        }
+        events.extend(self.close_open_text_block());
+
+        let idx = self.state_manager.next_block_index();
+        self.thinking_block_index = Some(idx);
+        self.thinking_extracted = true;
+        events.extend(self.state_manager.handle_content_block_start(
+            idx,
+            "thinking",
+            json!({
+                "type": "content_block_start",
+                "index": idx,
+                "content_block": {
+                    "type": "thinking",
+                    "thinking": ""
+                }
+            }),
+        ));
+        events
+    }
+
+    /// 关闭当前打开的 thinking 块：补发空 thinking_delta + signature_delta（优先用上游真签名）+ stop
+    fn close_open_thinking_block(&mut self) -> Vec<SseEvent> {
+        let Some(idx) = self.thinking_block_index else {
+            return Vec::new();
+        };
+        if !self.state_manager.is_block_open_of_type(idx, "thinking") {
+            return Vec::new();
+        }
+
+        let signature = self
+            .pending_thinking_signature
+            .take()
+            .unwrap_or_else(|| THINKING_SIGNATURE_PLACEHOLDER.to_string());
+        let mut events = vec![
+            self.create_thinking_delta_event(idx, ""),
+            self.create_signature_delta_event_with(idx, &signature),
+        ];
+        if let Some(stop_event) = self.state_manager.handle_content_block_stop(idx) {
+            events.push(stop_event);
+        }
+        events
+    }
+
+    /// 处理上游原生 reasoningContentEvent
+    ///
+    /// text → thinking_delta（先 ensure_thinking_block）；signature → 存入待发（块关闭时发）；
+    /// redactedContent → 独立 redacted_thinking 块。thinking 关闭时若上游无签名则用占位。
+    fn process_reasoning_content(
+        &mut self,
+        reasoning: &crate::kiro::model::events::ReasoningContentEvent,
+    ) -> Vec<SseEvent> {
+        // thinking 未启用：把思考文本降级为普通文本输出，避免丢内容
+        if !self.thinking_enabled {
+            if let Some(text) = reasoning.text.as_deref() {
+                if !text.is_empty() {
+                    self.output_tokens += estimate_tokens(text);
+                    return self.create_text_delta_events(text);
+                }
+            }
+            return Vec::new();
+        }
+
+        let mut events = Vec::new();
+
+        if let Some(signature) = reasoning.signature.as_deref() {
+            if !signature.is_empty() {
+                self.pending_thinking_signature = Some(signature.to_string());
+            }
+        }
+
+        if let Some(text) = reasoning.text.as_deref() {
+            if !text.is_empty() {
+                self.output_tokens += estimate_tokens(text);
+                events.extend(self.ensure_thinking_block());
+                if let Some(idx) = self.thinking_block_index {
+                    events.push(self.create_thinking_delta_event(idx, text));
+                }
+            }
+        }
+
+        if let Some(redacted) = reasoning.redacted_content.as_deref() {
+            if !redacted.is_empty() {
+                self.output_tokens += 8;
+                events.extend(self.create_redacted_thinking_events(redacted));
+            }
+        }
+
+        events
+    }
+
+    /// 创建 redacted_thinking 块（start + stop，内容放在 content_block.data）
+    fn create_redacted_thinking_events(&mut self, data: &str) -> Vec<SseEvent> {
+        let mut events = self.close_open_thinking_block();
+        events.extend(self.close_open_text_block());
+
+        let idx = self.state_manager.next_block_index();
+        events.extend(self.state_manager.handle_content_block_start(
+            idx,
+            "redacted_thinking",
+            json!({
+                "type": "content_block_start",
+                "index": idx,
+                "content_block": {
+                    "type": "redacted_thinking",
+                    "data": data
+                }
+            }),
+        ));
+        if let Some(stop_event) = self.state_manager.handle_content_block_stop(idx) {
+            events.push(stop_event);
+        }
+        events
     }
 
     /// 处理工具使用事件
