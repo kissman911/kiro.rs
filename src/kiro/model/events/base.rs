@@ -121,7 +121,11 @@ impl Event {
                 let payload = super::ContextUsageEvent::from_frame(&frame)?;
                 Ok(Self::ContextUsage(payload))
             }
-            EventType::Unknown => Ok(Self::Unknown {}),
+            EventType::Unknown => {
+                // 诊断：抓上游未识别的事件类型（如 reasoningContentEvent），确认上游是否真的下发思考事件。
+                tracing::warn!("未识别的上游事件类型: {}", event_type_str);
+                Ok(Self::Unknown {})
+            }
         }
     }
 
