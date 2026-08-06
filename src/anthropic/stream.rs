@@ -9,6 +9,16 @@ use uuid::Uuid;
 
 use crate::kiro::model::events::Event;
 
+/// thinking 块签名占位符。
+///
+/// Anthropic 协议要求：客户端在 thinking 模式下把上一轮 assistant 消息回传时，
+/// 会本地校验每个 thinking 块必须带**非空** signature，否则抛
+/// `The content[].thinking in the thinking mode must be passed back to the API`。
+/// 当前 Kiro 上游不下发原生 reasoning signature，所以我们在 thinking 块结束前
+/// 补一个占位 signature_delta，满足客户端本地校验。此校验与上游是否返回 thinking
+/// 内容无关，纯粹是客户端侧协议要求。
+pub(super) const THINKING_SIGNATURE_PLACEHOLDER: &str = "kiro-rs-thinking-signature";
+
 /// 找到小于等于目标位置的最近有效UTF-8字符边界
 ///
 /// UTF-8字符可能占用1-4个字节，直接按字节位置切片可能会切在多字节字符中间导致panic。
@@ -783,6 +793,8 @@ impl StreamContext {
                     if let Some(thinking_index) = self.thinking_block_index {
                         // 先发送空的 thinking_delta
                         events.push(self.create_thinking_delta_event(thinking_index, ""));
+                        // 再发送占位 signature_delta（满足客户端多轮 thinking 校验）
+                        events.push(self.create_signature_delta_event(thinking_index));
                         // 再发送 content_block_stop
                         if let Some(stop_event) =
                             self.state_manager.handle_content_block_stop(thinking_index)
@@ -908,6 +920,27 @@ impl StreamContext {
         )
     }
 
+    /// 创建占位 signature_delta 事件
+    ///
+    /// Anthropic 协议下 thinking 块流式结束前必须发一个 signature_delta，SDK 会把它
+    /// 聚合到 thinking 块的 `signature` 字段。客户端在下一轮回传 assistant 消息时本地
+    /// 校验 thinking 块必须带非空 signature，否则抛
+    /// `The content[].thinking in the thinking mode must be passed back to the API`。
+    /// 上游不下发原生 signature，故统一用占位值。
+    fn create_signature_delta_event(&self, index: i32) -> SseEvent {
+        SseEvent::new(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": index,
+                "delta": {
+                    "type": "signature_delta",
+                    "signature": THINKING_SIGNATURE_PLACEHOLDER,
+                }
+            }),
+        )
+    }
+
     /// 处理工具使用事件
     fn process_tool_use(
         &mut self,
@@ -939,6 +972,8 @@ impl StreamContext {
                 if let Some(thinking_index) = self.thinking_block_index {
                     // 先发送空的 thinking_delta
                     events.push(self.create_thinking_delta_event(thinking_index, ""));
+                    // 再发送占位 signature_delta（满足客户端多轮 thinking 校验）
+                    events.push(self.create_signature_delta_event(thinking_index));
                     // 再发送 content_block_stop
                     if let Some(stop_event) =
                         self.state_manager.handle_content_block_stop(thinking_index)
@@ -1055,6 +1090,7 @@ impl StreamContext {
                     // 关闭 thinking 块：先发送空的 thinking_delta，再发送 content_block_stop
                     if let Some(thinking_index) = self.thinking_block_index {
                         events.push(self.create_thinking_delta_event(thinking_index, ""));
+                        events.push(self.create_signature_delta_event(thinking_index));
                         if let Some(stop_event) =
                             self.state_manager.handle_content_block_stop(thinking_index)
                         {
@@ -1082,6 +1118,8 @@ impl StreamContext {
                     if let Some(thinking_index) = self.thinking_block_index {
                         // 先发送空的 thinking_delta
                         events.push(self.create_thinking_delta_event(thinking_index, ""));
+                        // 再发送占位 signature_delta（满足客户端多轮 thinking 校验）
+                        events.push(self.create_signature_delta_event(thinking_index));
                         // 再发送 content_block_stop
                         if let Some(stop_event) =
                             self.state_manager.handle_content_block_stop(thinking_index)
@@ -1659,6 +1697,35 @@ mod tests {
             }),
             "`</thinking>` should be filtered during final flush"
         );
+    }
+
+    #[test]
+    fn test_thinking_block_emits_signature_delta_before_stop() {
+        // 走完整 <thinking>...</thinking> 流式路径，thinking 块关闭前必须发一个
+        // 非空 signature_delta，否则客户端多轮 thinking 回传时会报
+        // "content[].thinking must be passed back"。
+        let mut ctx = StreamContext::new_with_thinking("test-model", 1, true, HashMap::new());
+        let _ = ctx.generate_initial_events();
+
+        let events = ctx.process_assistant_response("<thinking>\nreasoning here</thinking>\n\ndone");
+
+        let sig = events.iter().find(|e| {
+            e.event == "content_block_delta"
+                && e.data["delta"]["type"] == "signature_delta"
+        });
+        assert!(sig.is_some(), "expected a signature_delta before thinking block stop");
+        let sig_val = sig.unwrap().data["delta"]["signature"].as_str().unwrap_or("");
+        assert!(!sig_val.is_empty(), "signature must be non-empty, got: {:?}", sig_val);
+
+        // signature_delta 必须在 thinking 块的 content_block_stop 之前
+        let sig_pos = events.iter().position(|e| {
+            e.event == "content_block_delta"
+                && e.data["delta"]["type"] == "signature_delta"
+        });
+        let stop_pos = events.iter().position(|e| e.event == "content_block_stop");
+        if let (Some(sp), Some(stp)) = (sig_pos, stop_pos) {
+            assert!(sp < stp, "signature_delta must precede content_block_stop");
+        }
     }
 
     #[test]
