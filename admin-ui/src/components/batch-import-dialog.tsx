@@ -96,15 +96,44 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
   }
 
   const handleBatchImport = async () => {
-    // 先单独解析 JSON，给出精准的错误提示
+    // 支持两种输入格式：
+    //  1) 纯文本 API Key —— 一行一个 ksk_xxx（微信收到直接粘贴）
+    //  2) JSON —— 单对象或数组（OAuth / API Key / 原生缓存格式）
     let credentials: CredentialInput[]
-    try {
-      const parsed = JSON.parse(jsonInput)
-      const rawList = Array.isArray(parsed) ? parsed : [parsed]
-      credentials = rawList.map(normalizeCredentialFields)
-    } catch (error) {
-      toast.error('JSON 格式错误: ' + extractErrorMessage(error))
-      return
+    const trimmedInput = jsonInput.trim()
+    const looksLikePlainKeys =
+      trimmedInput.length > 0 &&
+      !trimmedInput.startsWith('{') &&
+      !trimmedInput.startsWith('[') &&
+      trimmedInput
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0)
+        .every((l) => l.startsWith('ksk_'))
+
+    if (looksLikePlainKeys) {
+      // 纯文本模式：一行一个 ksk_ key，本地去重后转成 API Key 凭据
+      const seen = new Set<string>()
+      credentials = trimmedInput
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0)
+        .filter((key) => {
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        .map((key) => ({ kiroApiKey: key, authMethod: 'api_key' }))
+    } else {
+      // JSON 模式：先单独解析，给出精准的错误提示
+      try {
+        const parsed = JSON.parse(jsonInput)
+        const rawList = Array.isArray(parsed) ? parsed : [parsed]
+        credentials = rawList.map(normalizeCredentialFields)
+      } catch (error) {
+        toast.error('输入格式错误：纯文本请每行一个 ksk_ 开头的 key，或粘贴合法 JSON。' + extractErrorMessage(error))
+        return
+      }
     }
 
     if (credentials.length === 0) {
@@ -449,17 +478,17 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
         <div className="flex-1 overflow-y-auto space-y-4 py-4">
           <div className="space-y-2">
             <label className="text-sm font-medium">
-              JSON 格式凭据
+              批量凭据（API Key 纯文本 / JSON）
             </label>
             <textarea
-              placeholder={'粘贴 JSON 格式的凭据（支持单个对象或数组）\n\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n代理字段示例: [{"refreshToken":"...","proxyUrl":"socks5://1.2.3.4:8000","proxyUsername":"kmkmhuyw","proxyPassword":"3d1it5o1kxnu"}]\n\n也支持原生 Kiro/导出缓存格式（snake_case）: [{"refresh_token":"...","client_id":"...","profile_arn":"...","token_endpoint":"...","auth_method":"external_idp"}]\n\n支持 region 字段自动映射为 authRegion'}
+              placeholder={'方式一 · API Key 纯文本（一行一个，微信收到直接贴）:\nksk_xxxxxxxxxxxx\nksk_yyyyyyyyyyyy\n\n方式二 · JSON（支持单个对象或数组）:\nOAuth: [{"refreshToken":"...","clientId":"...","clientSecret":"..."}]\nAPI Key: [{"kiroApiKey":"ksk_xxx"}]\n代理字段示例: [{"refreshToken":"...","proxyUrl":"socks5://1.2.3.4:8000","proxyUsername":"kmkmhuyw","proxyPassword":"3d1it5o1kxnu"}]\n\n也支持原生 Kiro/导出缓存格式（snake_case）: [{"refresh_token":"...","client_id":"...","profile_arn":"...","token_endpoint":"...","auth_method":"external_idp"}]\n\n支持 region 字段自动映射为 authRegion'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               disabled={importing}
               className="flex min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
             />
             <p className="text-xs text-muted-foreground">
-              💡 导入时自动验活，失败的凭据会被排除；代理 JSON 可复制：<code>{'\"proxyUrl\":\"socks5://1.2.3.4:8000\",\"proxyUsername\":\"kmkmhuyw\",\"proxyPassword\":\"3d1it5o1kxnu\"'}</code>
+              💡 纯文本模式：每行一个 <code>ksk_</code> 即可批量加 API Key，自动去重去空行。导入时自动验活，失败的凭据会被排除；代理 JSON 可复制：<code>{'\"proxyUrl\":\"socks5://1.2.3.4:8000\",\"proxyUsername\":\"kmkmhuyw\",\"proxyPassword\":\"3d1it5o1kxnu\"'}</code>
             </p>
           </div>
 
