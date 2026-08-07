@@ -8,6 +8,7 @@ import type {
   SetPriorityRequest,
   SetAllowOverageRequest,
   SetDisplayNameRequest,
+  SetEndpointRequest,
   SetRateLimitsRequest,
   AddCredentialRequest,
   AddCredentialResponse,
@@ -80,6 +81,18 @@ export async function setCredentialDisplayName(
   const { data } = await api.put<SuccessResponse>(
     `/credentials/${id}/display-name`,
     { displayName } as SetDisplayNameRequest
+  )
+  return data
+}
+
+// 设置凭据端点（kirors-b 专属：ide / cli / aws 环境隔离切换）
+export async function setCredentialEndpoint(
+  id: number,
+  endpoint: string | null
+): Promise<SuccessResponse> {
+  const { data } = await api.put<SuccessResponse>(
+    `/credentials/${id}/endpoint`,
+    { endpoint } as SetEndpointRequest
   )
   return data
 }

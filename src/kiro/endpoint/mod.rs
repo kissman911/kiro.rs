@@ -11,11 +11,48 @@ use reqwest::RequestBuilder;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::model::config::Config;
 
+pub mod aws;
 pub mod cli;
 pub mod ide;
 
+pub use aws::AwsEndpoint;
 pub use cli::CliEndpoint;
 pub use ide::IdeEndpoint;
+
+/// 全部内置端点名称（Admin API 校验与前端下拉的唯一来源）
+pub const KNOWN_ENDPOINTS: &[&str] = &[
+    ide::IDE_ENDPOINT_NAME,
+    cli::CLI_ENDPOINT_NAME,
+    aws::AWS_ENDPOINT_NAME,
+];
+
+/// 判断端点名称是否为内置可用端点
+pub fn is_known_endpoint(name: &str) -> bool {
+    KNOWN_ENDPOINTS.contains(&name)
+}
+
+/// 解析凭据实际生效的端点名称（凭据未指定时回退到 `config.defaultEndpoint`）
+pub fn resolved_endpoint_name<'a>(credentials: &'a KiroCredentials, config: &'a Config) -> &'a str {
+    credentials
+        .endpoint
+        .as_deref()
+        .unwrap_or(&config.default_endpoint)
+}
+
+/// 控制面主机（额度查询 / Profile 列表所在域名）
+///
+/// 两套环境的控制面必须与推理端点保持一致，否则会出现
+/// 「推理走 `q.*.amazonaws.com`、额度却查 `management.*.kiro.dev`」的串台。
+///
+/// - `aws` 端点 → `q.{region}.amazonaws.com`（与上游原版一致）
+/// - 其余端点（`ide` / `cli`）→ `management.{region}.kiro.dev`
+pub fn control_plane_host(credentials: &KiroCredentials, config: &Config, region: &str) -> String {
+    if resolved_endpoint_name(credentials, config) == aws::AWS_ENDPOINT_NAME {
+        aws::aws_host(region)
+    } else {
+        format!("management.{}.kiro.dev", region)
+    }
+}
 
 /// Kiro 端点
 ///

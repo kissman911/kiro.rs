@@ -453,6 +453,39 @@ impl AdminService {
         Ok(())
     }
 
+    /// 设置凭据端点（kirors-b 专属：ide / cli / aws 环境隔离切换）
+    pub fn set_endpoint(
+        &self,
+        id: u64,
+        endpoint: Option<String>,
+    ) -> Result<(), AdminServiceError> {
+        let normalized = endpoint
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if let Some(name) = normalized.as_deref() {
+            if !crate::kiro::endpoint::is_known_endpoint(name) {
+                return Err(AdminServiceError::InvalidRequest(format!(
+                    "未知端点 \"{}\"，可用: {}",
+                    name,
+                    crate::kiro::endpoint::KNOWN_ENDPOINTS.join(" / ")
+                )));
+            }
+        }
+
+        self.token_manager
+            .set_endpoint(id, normalized)
+            .map_err(|e| self.classify_error(e, id))?;
+
+        // 端点切换会改变额度查询主机（q.* vs management.*），旧余额缓存不再可比
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.remove(&id);
+        }
+        self.save_balance_cache();
+        Ok(())
+    }
+
     /// 设置凭据自定义显示名称
     pub fn set_display_name(
         &self,
@@ -867,7 +900,8 @@ mod tests {
         let config = Config::default();
         let tm = Arc::new(MultiTokenManager::new(config, vec![], None, None, false).expect("tm"));
         let pool = Arc::new(ProxyPool::load(None, TlsBackend::Rustls));
-        AdminService::new(tm, Vec::<String>::new(), pool)
+        let carpool = Arc::new(crate::carpool::Carpool::load(None));
+        AdminService::new(tm, Vec::<String>::new(), pool, carpool)
     }
 
     #[test]

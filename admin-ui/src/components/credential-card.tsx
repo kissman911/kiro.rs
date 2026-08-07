@@ -16,11 +16,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import type { CredentialStatusItem, BalanceResponse, RateLimitRule, RequestEventItem, RequestEventKind } from '@/types/api'
+import { KIRO_ENDPOINTS, KIRO_ENDPOINT_META } from '@/types/api'
 import {
   useSetDisabled,
   useSetPriority,
   useSetAllowOverage,
   useSetDisplayName,
+  useSetEndpoint,
   useResetFailure,
   useClearCooldown,
   useDeleteCredential,
@@ -135,11 +137,31 @@ export function CredentialCard({
   const setPriority = useSetPriority()
   const setAllowOverage = useSetAllowOverage()
   const setDisplayName = useSetDisplayName()
+  const setEndpoint = useSetEndpoint()
+  const activeEndpointMeta =
+    credential.endpoint && credential.endpoint in KIRO_ENDPOINT_META
+      ? KIRO_ENDPOINT_META[credential.endpoint as keyof typeof KIRO_ENDPOINT_META]
+      : null
   const resetFailure = useResetFailure()
   const clearCooldown = useClearCooldown()
   const deleteCredential = useDeleteCredential()
   const forceRefresh = useForceRefreshToken()
   const resetSuccess = useResetSuccessCount()
+
+  const handleEndpointChange = (target: string) => {
+    if (target === credential.endpoint) return
+    setEndpoint.mutate(
+      { id: credential.id, endpoint: target },
+      {
+        onSuccess: (res) => {
+          toast.success(res.message)
+        },
+        onError: (err) => {
+          toast.error('端点切换失败: ' + (err as Error).message)
+        },
+      }
+    )
+  }
 
   const handleToggleDisabled = () => {
     setDisabled.mutate(
@@ -323,8 +345,49 @@ export function CredentialCard({
                      credential.authMethod}
                   </Badge>
                 )}
-                {credential.endpoint && (
-                  <Badge variant="outline">{credential.endpoint}</Badge>
+                <div className="inline-flex items-center gap-0.5 rounded-md border bg-muted/40 p-0.5">
+                  <span className="px-1 text-[10px] uppercase tracking-wide text-muted-foreground">端点</span>
+                  {KIRO_ENDPOINTS.map((name) => {
+                    const meta = KIRO_ENDPOINT_META[name]
+                    const active = credential.endpoint === name
+                    return (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => handleEndpointChange(name)}
+                        disabled={setEndpoint.isPending}
+                        title={`${meta.hint}\n域名：${meta.domain}`}
+                        className={
+                          'rounded px-1.5 py-0.5 text-[11px] font-medium leading-none transition-colors disabled:opacity-50 ' +
+                          (active
+                            ? meta.family === 'aws'
+                              ? 'bg-orange-500 text-white'
+                              : 'bg-sky-600 text-white'
+                            : 'text-muted-foreground hover:bg-muted')
+                        }
+                      >
+                        {meta.label}
+                      </button>
+                    )
+                  })}
+                  {setEndpoint.isPending && (
+                    <Loader2 className="ml-0.5 h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                {activeEndpointMeta && (
+                  <Badge
+                    variant="outline"
+                    className={
+                      'gap-1 font-normal ' +
+                      (activeEndpointMeta.family === 'aws'
+                        ? 'border-orange-400 text-orange-600'
+                        : 'border-sky-400 text-sky-600')
+                    }
+                    title={activeEndpointMeta.hint}
+                  >
+                    {activeEndpointMeta.family === 'aws' ? '原版旧环境' : 'Kiro 新环境'}
+                    <span className="opacity-70">{activeEndpointMeta.domain}</span>
+                  </Badge>
                 )}
                 {credential.allowOverage && (
                   <Badge variant="outline" className="text-purple-600 border-purple-300">超额</Badge>

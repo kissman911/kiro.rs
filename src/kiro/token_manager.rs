@@ -497,7 +497,7 @@ async fn resolve_profile_metadata(
     }
 
     for region in regions {
-        let host = format!("management.{}.kiro.dev", region);
+        let host = crate::kiro::endpoint::control_plane_host(credentials, config, &region);
         let url = format!("https://{}/ListAvailableProfiles", host);
         let mut request = client
             .post(&url)
@@ -688,7 +688,8 @@ pub(crate) async fn get_usage_limits(
 
     // 优先级：凭据.api_region > config.api_region > config.region
     let region = credentials.effective_api_region(config);
-    let host = format!("management.{}.kiro.dev", region);
+    // 控制面主机跟随凭据端点：aws 端点走 q.*.amazonaws.com，其余走 management.*.kiro.dev
+    let host = crate::kiro::endpoint::control_plane_host(credentials, config, region);
     let machine_id = machine_id::generate_from_credentials(credentials, config);
     let kiro_version = &config.kiro_version;
 
@@ -2355,6 +2356,22 @@ impl MultiTokenManager {
                 .find(|e| e.id == id)
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
             entry.credentials.display_name = normalized;
+        }
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    /// 设置指定凭据的端点（Admin API，kirors-b 专属环境切换）
+    ///
+    /// 传 None 表示清除凭据级设置，回退到 `config.defaultEndpoint`。
+    pub fn set_endpoint(&self, id: u64, endpoint: Option<String>) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.credentials.endpoint = endpoint;
         }
         self.persist_credentials()?;
         Ok(())

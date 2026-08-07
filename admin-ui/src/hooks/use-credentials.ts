@@ -5,6 +5,7 @@ import {
   setCredentialPriority,
   setCredentialAllowOverage,
   setCredentialDisplayName,
+  setCredentialEndpoint,
   setCredentialRateLimits,
   resetCredentialFailure,
   clearCredentialCooldown,
@@ -73,6 +74,19 @@ export function useSetDisplayName() {
       setCredentialDisplayName(id, displayName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+// 设置凭据端点（ide / cli / aws 环境隔离切换）
+export function useSetEndpoint() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, endpoint }: { id: number; endpoint: string | null }) =>
+      setCredentialEndpoint(id, endpoint),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['credential-balance', variables.id] })
     },
   })
 }

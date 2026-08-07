@@ -10,8 +10,8 @@ use super::{
     middleware::AdminState,
     types::{
         AddCredentialRequest, AddProxyRequest, BatchAddProxyRequest, SetAllowOverageRequest,
-        SetDisabledRequest, SetDisplayNameRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SetProxyDisabledRequest, SetRateLimitsRequest, SuccessResponse,
+        SetDisabledRequest, SetDisplayNameRequest, SetEndpointRequest, SetLoadBalancingModeRequest,
+        SetPriorityRequest, SetProxyDisabledRequest, SetRateLimitsRequest, SuccessResponse,
         UpdateProxyPoolSettingsRequest, UpdateProxyRequest, UpdateRuntimeSettingsRequest,
         VersionInfoResponse,
     },
@@ -123,6 +123,31 @@ pub async fn set_credential_display_name(
 ) -> impl IntoResponse {
     match state.service.set_display_name(id, payload.display_name) {
         Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 显示名称已更新", id))).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// PUT /api/admin/credentials/:id/endpoint
+/// 切换凭据端点（kirors-b 专属：ide / cli / aws 三套环境隔离切换）
+pub async fn set_credential_endpoint(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<SetEndpointRequest>,
+) -> impl IntoResponse {
+    match state.service.set_endpoint(id, payload.endpoint.clone()) {
+        Ok(_) => {
+            let target = payload
+                .endpoint
+                .as_deref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "默认端点".to_string());
+            Json(SuccessResponse::new(format!(
+                "凭据 #{} 端点已切换为 {}",
+                id, target
+            )))
+            .into_response()
+        }
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }

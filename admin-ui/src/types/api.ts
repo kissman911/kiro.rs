@@ -118,6 +118,39 @@ export interface SetDisplayNameRequest {
   displayName: string | null
 }
 
+// 可用端点（与后端 KNOWN_ENDPOINTS 保持一致）
+export const KIRO_ENDPOINTS = ['ide', 'cli', 'aws'] as const
+export type KiroEndpointName = (typeof KIRO_ENDPOINTS)[number]
+
+// 端点展示元信息：区分「AWS 原版旧端点」与「Kiro 新端点」
+export const KIRO_ENDPOINT_META: Record<
+  KiroEndpointName,
+  { label: string; family: 'kiro' | 'aws'; domain: string; hint: string }
+> = {
+  ide: {
+    label: 'Kiro IDE',
+    family: 'kiro',
+    domain: 'runtime.*.kiro.dev',
+    hint: 'Kiro 新端点（IDE）：推理 runtime.*.kiro.dev，额度 management.*.kiro.dev。profileArn 必需。',
+  },
+  cli: {
+    label: 'Kiro CLI',
+    family: 'kiro',
+    domain: 'runtime.*.kiro.dev',
+    hint: 'Kiro 新端点（CLI）：AWS JSON 1.0 协议走根路径，额度 management.*.kiro.dev。',
+  },
+  aws: {
+    label: 'AWS 原版',
+    family: 'aws',
+    domain: 'q.*.amazonaws.com',
+    hint: 'AWS 原版旧端点（上游 hank9999/kiro.rs 同款）：推理与额度均走 q.*.amazonaws.com。profileArn 可缺省，校验更宽松。',
+  },
+}
+
+export interface SetEndpointRequest {
+  endpoint: string | null
+}
+
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken?: string
