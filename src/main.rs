@@ -1,6 +1,7 @@
 mod admin;
 mod admin_ui;
 mod anthropic;
+mod carpool;
 mod common;
 mod http_client;
 mod image_resize;
@@ -188,8 +189,15 @@ async fn main() {
                 token_manager.cache_dir().map(|d| d.join("proxy_pool.json")),
                 config.tls_backend,
             ));
-            let admin_service =
-                admin::AdminService::new(token_manager.clone(), endpoint_names.clone(), proxy_pool);
+            let carpool = std::sync::Arc::new(carpool::Carpool::load(
+                token_manager.cache_dir().map(|d| d.join("carpool.json")),
+            ));
+            let admin_service = admin::AdminService::new(
+                token_manager.clone(),
+                endpoint_names.clone(),
+                proxy_pool,
+                carpool,
+            );
             let admin_state = admin::AdminState::new(admin_key, admin_service);
             let admin_app = admin::create_admin_router(admin_state);
 

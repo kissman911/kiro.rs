@@ -17,6 +17,22 @@ use super::{
     },
 };
 
+/// GET /api/admin/carpool/settings
+pub async fn get_carpool_settings(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_carpool_settings())
+}
+
+/// PUT /api/admin/carpool/settings
+pub async fn update_carpool_settings(
+    State(state): State<AdminState>,
+    Json(payload): Json<crate::carpool::CarpoolSettingsPatch>,
+) -> impl IntoResponse {
+    match state.service.set_carpool_settings(payload) {
+        Ok(resp) => Json(resp).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// GET /api/admin/version
 /// 获取 KissAPI 二次开发版本信息
 pub async fn get_version_info() -> impl IntoResponse {

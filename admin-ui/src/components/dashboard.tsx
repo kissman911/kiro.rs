@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Trash2, RotateCcw, CheckCircle2, GitBranch, Settings2, Network } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Trash2, RotateCcw, CheckCircle2, GitBranch, Settings2, Network, Car } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
@@ -13,6 +13,7 @@ import { BatchImportDialog } from '@/components/batch-import-dialog'
 import { KamImportDialog } from '@/components/kam-import-dialog'
 import { SettingsDialog } from '@/components/settings-dialog'
 import { ProxyPoolDialog } from '@/components/proxy-pool-dialog'
+import { CarpoolDialog } from '@/components/carpool-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useResetAllSuccessCount, useVersionInfo } from '@/hooks/use-credentials'
 import { getCredentialBalance, forceRefreshToken } from '@/api/credentials'
@@ -31,6 +32,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [kamImportDialogOpen, setKamImportDialogOpen] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [proxyPoolDialogOpen, setProxyPoolDialogOpen] = useState(false)
+  const [carpoolDialogOpen, setCarpoolDialogOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [verifyDialogOpen, setVerifyDialogOpen] = useState(false)
   const [verifying, setVerifying] = useState(false)
@@ -573,6 +575,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <Button variant="ghost" size="icon" onClick={() => setProxyPoolDialogOpen(true)} title="IP 代理池">
               <Network className="h-5 w-5" />
             </Button>
+            <Button variant="ghost" size="icon" onClick={() => setCarpoolDialogOpen(true)} title="拼车补号配置">
+              <Car className="h-5 w-5" />
+            </Button>
             <Button variant="ghost" size="icon" onClick={() => setSettingsDialogOpen(true)} title="运行时设置">
               <Settings2 className="h-5 w-5" />
             </Button>
@@ -820,7 +825,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
       <ProxyPoolDialog
         open={proxyPoolDialogOpen}
         onOpenChange={setProxyPoolDialogOpen}
-      />
 
       {/* 批量验活对话框 */}
       <BatchVerifyDialog

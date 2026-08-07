@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "kiro-rs"
-version = "2026.8.1-native-effort"
+version = "2026.8.2-image-resize"
 dependencies = [
  "anyhow",
  "axum",

@@ -230,6 +230,31 @@ export interface UpdateProxyPoolSettingsRequest {
   probeUrl?: string
 }
 
+// 拼车补号配置（kirors-b 专属，daemon 消费）
+export interface CarpoolSettings {
+  enabled: boolean
+  getUrl: string
+  targetActive: number
+  pollInterval: number
+  dryRun: boolean
+  recentWindow: number
+  minSample: number
+  disableErrRatio: number
+  healthyErrRatio: number
+}
+
+export interface UpdateCarpoolSettingsRequest {
+  enabled?: boolean
+  getUrl?: string
+  targetActive?: number
+  pollInterval?: number
+  dryRun?: boolean
+  recentWindow?: number
+  minSample?: number
+  disableErrRatio?: number
+  healthyErrRatio?: number
+}
+
 export interface ProxyTestResponse {
   success: boolean
   message: string

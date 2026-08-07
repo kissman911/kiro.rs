@@ -21,6 +21,8 @@ import type {
   UpdateProxyRequest,
   ProxyPoolSettingsResponse,
   UpdateProxyPoolSettingsRequest,
+  CarpoolSettings,
+  UpdateCarpoolSettingsRequest,
   ProxyTestResponse,
   BatchAddProxyResponse,
 } from '@/types/api'
@@ -264,5 +266,18 @@ export async function updateProxyPoolSettings(
   req: UpdateProxyPoolSettingsRequest
 ): Promise<ProxyPoolSettingsResponse> {
   const { data } = await api.put<ProxyPoolSettingsResponse>('/proxy-pool/settings', req)
+  return data
+}
+
+// 拼车补号配置
+export async function getCarpoolSettings(): Promise<CarpoolSettings> {
+  const { data } = await api.get<CarpoolSettings>('/carpool/settings')
+  return data
+}
+
+export async function updateCarpoolSettings(
+  req: UpdateCarpoolSettingsRequest
+): Promise<CarpoolSettings> {
+  const { data } = await api.put<CarpoolSettings>('/carpool/settings', req)
   return data
 }

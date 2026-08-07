@@ -41,6 +41,8 @@ pub struct AdminService {
     known_endpoints: HashSet<String>,
     /// IP 代理池
     proxy_pool: Arc<crate::proxy_pool::ProxyPool>,
+    /// 拼车补号配置（面板可配，daemon 消费）
+    carpool: Arc<crate::carpool::Carpool>,
 }
 
 impl AdminService {
@@ -48,6 +50,7 @@ impl AdminService {
         token_manager: Arc<MultiTokenManager>,
         known_endpoints: impl IntoIterator<Item = String>,
         proxy_pool: Arc<crate::proxy_pool::ProxyPool>,
+        carpool: Arc<crate::carpool::Carpool>,
     ) -> Self {
         let cache_path = token_manager
             .cache_dir()
@@ -61,7 +64,23 @@ impl AdminService {
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
             proxy_pool,
+            carpool,
         }
+    }
+
+    /// 获取拼车补号配置
+    pub fn get_carpool_settings(&self) -> crate::carpool::CarpoolSettings {
+        self.carpool.settings()
+    }
+
+    /// 更新拼车补号配置
+    pub fn set_carpool_settings(
+        &self,
+        req: crate::carpool::CarpoolSettingsPatch,
+    ) -> Result<crate::carpool::CarpoolSettings, AdminServiceError> {
+        self.carpool.patch(req).map_err(|e| {
+            AdminServiceError::InvalidRequest(e.to_string())
+        })
     }
 
     /// 获取所有凭据状态
