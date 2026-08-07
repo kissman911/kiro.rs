@@ -825,6 +825,13 @@ export function Dashboard({ onLogout }: DashboardProps) {
       <ProxyPoolDialog
         open={proxyPoolDialogOpen}
         onOpenChange={setProxyPoolDialogOpen}
+      />
+
+      {/* 拼车补号配置对话框 */}
+      <CarpoolDialog
+        open={carpoolDialogOpen}
+        onOpenChange={setCarpoolDialogOpen}
+      />
 
       {/* 批量验活对话框 */}
       <BatchVerifyDialog
