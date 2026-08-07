@@ -32,6 +32,12 @@ const MAX_TOTAL_RETRIES: usize = 9;
 /// 可通过 config.suspiciousCooldownSeconds 调整；默认 10 分钟，避免继续重试同一账号扩大风控。
 const DEFAULT_SUSPICIOUS_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
+/// Kiro 上游用户级频率超限（USER_REQUEST_RATE_EXCEEDED / Too many requests）的冷却时间。
+/// 与 suspicious activity 风控不同：这类是普通的短时频率超限，恢复很快，
+/// 冷却过久会把好号长时间闲置。默认 90 秒，冷却当前号并切换到下一个可用号，
+/// 到点自动恢复参与调度（自愈）。
+const USER_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(90);
+
 /// Kiro API Provider
 ///
 /// 核心组件，负责与 Kiro API 通信
@@ -218,6 +224,20 @@ impl KiroProvider {
             && body.contains("can send a request to Kiro")
     }
 
+    /// 判断是否为 Kiro 上游用户级频率超限（普通短时限流，非账号级风控）。
+    ///
+    /// 典型报文：`429 {"message":"Too many requests, please wait before trying again.",
+    /// "reason":"USER_REQUEST_RATE_EXCEEDED"}`。
+    ///
+    /// 与 [`is_suspicious_activity_rate_limit`] 分开处理：suspicious activity 是账号级
+    /// 风控（冷却 10 分钟），这类是普通频率超限（冷却 90 秒即可，恢复快）。
+    /// 两者都走「冷却当前号 + 切换」的自愈路径，避免死磕同一把号导致对客户端返回 502。
+    pub(crate) fn is_user_rate_exceeded(status: reqwest::StatusCode, body: &str) -> bool {
+        status.as_u16() == 429
+            && (body.contains("USER_REQUEST_RATE_EXCEEDED")
+                || body.contains("Too many requests"))
+    }
+
     /// 内部方法：带重试逻辑的 MCP API 调用
     async fn call_mcp_with_retry(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
         let total_credentials = self.token_manager.total_count();
@@ -362,6 +382,33 @@ impl KiroProvider {
                 if !has_available {
                     anyhow::bail!(
                         "MCP 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
+                        status,
+                        body
+                    );
+                }
+                last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
+                continue;
+            }
+
+            // Kiro 用户级频率超限 429（USER_REQUEST_RATE_EXCEEDED）：冷却当前凭据并切换到下一把好号，
+            // 冷却 90 秒后自动恢复参与调度（自愈），避免死磕同一把号导致对客户端返回 502。
+            if Self::is_user_rate_exceeded(status, &body) {
+                tracing::warn!(
+                    "MCP 请求失败（Kiro 用户级频率超限 429，冷却凭据并切换，尝试 {}/{}）: {} {}",
+                    attempt + 1,
+                    max_retries,
+                    status,
+                    body
+                );
+                let has_available = self.token_manager.report_suspicious_rate_limited(
+                    ctx.id,
+                    USER_RATE_LIMIT_COOLDOWN,
+                    Some(status.as_u16()),
+                    Some(&body),
+                );
+                if !has_available {
+                    anyhow::bail!(
+                        "MCP 请求失败（所有凭据均在限流冷却或已禁用）: {} {}",
                         status,
                         body
                     );
@@ -617,6 +664,39 @@ impl KiroProvider {
                 continue;
             }
 
+            // Kiro 用户级频率超限 429（USER_REQUEST_RATE_EXCEEDED）：冷却当前凭据并切换到下一把好号，
+            // 冷却 90 秒后自动恢复参与调度（自愈），避免死磕同一把号导致对客户端返回 502。
+            if Self::is_user_rate_exceeded(status, &body) {
+                tracing::warn!(
+                    "API 请求失败（Kiro 用户级频率超限 429，冷却凭据并切换，尝试 {}/{}）: {} {}",
+                    attempt + 1,
+                    max_retries,
+                    status,
+                    body
+                );
+                let has_available = self.token_manager.report_suspicious_rate_limited(
+                    ctx.id,
+                    USER_RATE_LIMIT_COOLDOWN,
+                    Some(status.as_u16()),
+                    Some(&body),
+                );
+                if !has_available {
+                    anyhow::bail!(
+                        "{} API 请求失败（所有凭据均在限流冷却或已禁用）: {} {}",
+                        api_type,
+                        status,
+                        body
+                    );
+                }
+                last_error = Some(anyhow::anyhow!(
+                    "{} API 请求失败: {} {}",
+                    api_type,
+                    status,
+                    body
+                ));
+                continue;
+            }
+
             // 429/408/5xx - 瞬态上游错误：重试但不禁用或切换凭据
             // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
             if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
@@ -736,6 +816,23 @@ impl KiroProvider {
             anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
         }
 
+        // Kiro 用户级频率超限 429（USER_REQUEST_RATE_EXCEEDED）：冷却固定凭据 90 秒，到点自动恢复。
+        if Self::is_user_rate_exceeded(status, &body) {
+            tracing::warn!(
+                "固定凭据 API 请求失败（Kiro 用户级频率超限 429，冷却凭据）: credential_id={} {} {}",
+                ctx.id,
+                status,
+                body
+            );
+            self.token_manager.report_suspicious_rate_limited(
+                ctx.id,
+                USER_RATE_LIMIT_COOLDOWN,
+                Some(status.as_u16()),
+                Some(&body),
+            );
+            anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+        }
+
         if matches!(status.as_u16(), 401 | 403) {
             self.token_manager
                 .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
@@ -795,6 +892,38 @@ mod suspicious_rate_limit_tests {
     fn does_not_treat_generic_429_as_suspicious_activity() {
         let body = r#"{"message":"Too many requests, please try again later"}"#;
         assert!(!KiroProvider::is_suspicious_activity_rate_limit(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body
+        ));
+    }
+
+    #[test]
+    fn detects_user_request_rate_exceeded() {
+        let body = r#"{"message":"Too many requests, please wait before trying again.","reason":"USER_REQUEST_RATE_EXCEEDED"}"#;
+        assert!(KiroProvider::is_user_rate_exceeded(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body
+        ));
+        // 用户级频率超限不应被误判为 suspicious activity 风控
+        assert!(!KiroProvider::is_suspicious_activity_rate_limit(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            body
+        ));
+    }
+
+    #[test]
+    fn user_rate_exceeded_requires_429() {
+        let body = r#"{"reason":"USER_REQUEST_RATE_EXCEEDED"}"#;
+        assert!(!KiroProvider::is_user_rate_exceeded(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            body
+        ));
+    }
+
+    #[test]
+    fn non_rate_limit_429_is_not_user_rate_exceeded() {
+        let body = r#"{"message":"some other 429 reason"}"#;
+        assert!(!KiroProvider::is_user_rate_exceeded(
             reqwest::StatusCode::TOO_MANY_REQUESTS,
             body
         ));
