@@ -137,6 +137,15 @@ pub struct SetAllowOverageRequest {
     pub allow_overage: bool,
 }
 
+/// 切换凭据端点请求（kirors-b 专属：ide / cli / aws 环境隔离切换）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetEndpointRequest {
+    /// 目标端点名称；传 null 表示清除凭据级设置并回退到 config.defaultEndpoint
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
 /// 设置凭据显示名称请求
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

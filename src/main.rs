@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
-use kiro::endpoint::{CliEndpoint, IdeEndpoint, KiroEndpoint};
+use kiro::endpoint::{AwsEndpoint, CliEndpoint, IdeEndpoint, KiroEndpoint};
 use kiro::model::credentials::{CredentialsConfig, KiroCredentials};
 use kiro::provider::KiroProvider;
 use kiro::token_manager::MultiTokenManager;
@@ -111,6 +111,9 @@ async fn main() {
         endpoints.insert(ide.name().to_string(), Arc::new(ide));
         let cli = CliEndpoint::new();
         endpoints.insert(cli.name().to_string(), Arc::new(cli));
+        // AWS 旧版环境（q.*.amazonaws.com），与 ide/cli 完全隔离，可按凭据一键切换
+        let aws = AwsEndpoint::new();
+        endpoints.insert(aws.name().to_string(), Arc::new(aws));
     }
 
     // 校验默认端点存在

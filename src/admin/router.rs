@@ -12,7 +12,8 @@ use super::{
         get_credential_balance, get_load_balancing_mode, get_proxy_pool, get_proxy_pool_settings,
         get_runtime_settings, get_version_info, reset_all_success_count, reset_failure_count,
         reset_success_count, set_credential_allow_overage, set_credential_disabled,
-        set_credential_display_name, set_credential_priority, set_credential_rate_limits,
+        set_credential_display_name, set_credential_endpoint, set_credential_priority,
+        set_credential_rate_limits,
         set_load_balancing_mode, set_proxy_disabled, test_proxy, update_carpool_settings,
         update_proxy, update_proxy_pool_settings, update_runtime_settings,
     },
@@ -57,6 +58,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/credentials/{id}/display-name",
             put(set_credential_display_name),
         )
+        .route("/credentials/{id}/endpoint", put(set_credential_endpoint))
         .route(
             "/credentials/{id}/allow-overage",
             put(set_credential_allow_overage),

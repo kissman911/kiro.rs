@@ -1,23 +1,35 @@
-//! Kiro IDE 端点
+//! AWS 旧版端点（kirors-b 专属）
 //!
-//! 对应 Kiro IDE 客户端目前使用的 Kiro 专用端点：
-//! - API: `https://runtime.{api_region}.kiro.dev/generateAssistantResponse`
-//! - MCP: `https://runtime.{api_region}.kiro.dev/mcp`
+//! 对应上游 hank9999/kiro.rs 原版使用的 AWS CodeWhisperer 端点：
+//! - API: `https://q.{api_region}.amazonaws.com/generateAssistantResponse`
+//! - MCP: `https://q.{api_region}.amazonaws.com/mcp`
+//! - 额度: `https://q.{api_region}.amazonaws.com/getUsageLimits`
+//! - Profile: `https://q.{api_region}.amazonaws.com/ListAvailableProfiles`
 //!
-//! 请求头使用 aws-sdk-js User-Agent 标识。请求体会在根对象上注入 `profileArn`。
+//! 与 `ide` 端点的差异仅在域名与配套的额度/Profile 主机；请求头、请求体
+//! （根对象注入 `profileArn`）保持一致，便于同一凭据在两套环境间来回切换对比。
+//!
+//! 该端点对请求体的校验比 `runtime.*.kiro.dev` 宽松：`profileArn` 可缺省，
+//! 且鉴权失败先于业务参数校验返回。
 
 use reqwest::RequestBuilder;
 use uuid::Uuid;
 
+use super::ide::inject_profile_arn;
 use super::{KiroEndpoint, RequestContext};
 
-/// Kiro IDE 端点名称
-pub const IDE_ENDPOINT_NAME: &str = "ide";
+/// AWS 旧版端点名称
+pub const AWS_ENDPOINT_NAME: &str = "aws";
 
-/// Kiro IDE 端点
-pub struct IdeEndpoint;
+/// AWS 旧版端点主机（`q.{region}.amazonaws.com`）
+pub fn aws_host(region: &str) -> String {
+    format!("q.{}.amazonaws.com", region)
+}
 
-impl IdeEndpoint {
+/// AWS 旧版端点
+pub struct AwsEndpoint;
+
+impl AwsEndpoint {
     pub fn new() -> Self {
         Self
     }
@@ -27,7 +39,7 @@ impl IdeEndpoint {
     }
 
     fn host(&self, ctx: &RequestContext<'_>) -> String {
-        format!("runtime.{}.kiro.dev", self.api_region(ctx))
+        aws_host(self.api_region(ctx))
     }
 
     fn x_amz_user_agent(&self, ctx: &RequestContext<'_>) -> String {
@@ -48,26 +60,26 @@ impl IdeEndpoint {
     }
 }
 
-impl Default for IdeEndpoint {
+impl Default for AwsEndpoint {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl KiroEndpoint for IdeEndpoint {
+impl KiroEndpoint for AwsEndpoint {
     fn name(&self) -> &'static str {
-        IDE_ENDPOINT_NAME
+        AWS_ENDPOINT_NAME
     }
 
     fn api_url(&self, ctx: &RequestContext<'_>) -> String {
         format!(
-            "https://runtime.{}.kiro.dev/generateAssistantResponse",
-            self.api_region(ctx)
+            "https://{}/generateAssistantResponse",
+            aws_host(self.api_region(ctx))
         )
     }
 
     fn mcp_url(&self, ctx: &RequestContext<'_>) -> String {
-        format!("https://runtime.{}.kiro.dev/mcp", self.api_region(ctx))
+        format!("https://{}/mcp", aws_host(self.api_region(ctx)))
     }
 
     fn decorate_api(&self, req: RequestBuilder, ctx: &RequestContext<'_>) -> RequestBuilder {
@@ -114,60 +126,18 @@ impl KiroEndpoint for IdeEndpoint {
     }
 }
 
-/// 将 profile_arn 注入到请求体 JSON 根对象
-pub(super) fn inject_profile_arn(request_body: &str, profile_arn: &Option<String>) -> String {
-    if let Some(arn) = profile_arn {
-        if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(request_body) {
-            json["profileArn"] = serde_json::Value::String(arn.clone());
-            if let Ok(body) = serde_json::to_string(&json) {
-                return body;
-            }
-        }
-    }
-    request_body.to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::inject_profile_arn;
-    use serde_json::Value;
+    use super::*;
 
     #[test]
-    fn test_inject_profile_arn_with_some() {
-        let body = r#"{"conversationState":{"conversationId":"c1"}}"#;
-        let arn = Some("arn:aws:codewhisperer:us-east-1:123:profile/ABC".to_string());
-        let result = inject_profile_arn(body, &arn);
-        let json: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(
-            json["profileArn"],
-            "arn:aws:codewhisperer:us-east-1:123:profile/ABC"
-        );
-        assert_eq!(json["conversationState"]["conversationId"], "c1");
+    fn test_aws_host_uses_region() {
+        assert_eq!(aws_host("us-east-1"), "q.us-east-1.amazonaws.com");
+        assert_eq!(aws_host("eu-central-1"), "q.eu-central-1.amazonaws.com");
     }
 
     #[test]
-    fn test_inject_profile_arn_with_none() {
-        let body = r#"{"conversationState":{"conversationId":"c1"}}"#;
-        let result = inject_profile_arn(body, &None);
-        let json: Value = serde_json::from_str(&result).unwrap();
-        assert!(json.get("profileArn").is_none());
-        assert_eq!(json["conversationState"]["conversationId"], "c1");
-    }
-
-    #[test]
-    fn test_inject_profile_arn_overwrites_existing() {
-        let body = r#"{"conversationState":{},"profileArn":"old-arn"}"#;
-        let arn = Some("new-arn".to_string());
-        let result = inject_profile_arn(body, &arn);
-        let json: Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(json["profileArn"], "new-arn");
-    }
-
-    #[test]
-    fn test_inject_profile_arn_invalid_json() {
-        let body = "not-valid-json";
-        let arn = Some("arn:test".to_string());
-        let result = inject_profile_arn(body, &arn);
-        assert_eq!(result, "not-valid-json");
+    fn test_endpoint_name() {
+        assert_eq!(AwsEndpoint::new().name(), "aws");
     }
 }
