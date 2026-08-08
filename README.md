@@ -192,7 +192,7 @@ docker-compose up
 | `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
 | `suspiciousCooldownSeconds` | number | `600` | Kiro 上游 suspicious activity 429 触发后的运行时冷却秒数（Admin UI 运行时设置中以分钟展示，可即时修改） |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
-| `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`ide` |
+| `defaultEndpoint` | string | `aws` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。当前支持：`aws` / `ide` / `cli` |
 
 完整配置示例：
 

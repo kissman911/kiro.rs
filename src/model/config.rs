@@ -113,7 +113,7 @@ pub struct Config {
     #[serde(default = "default_extract_thinking")]
     pub extract_thinking: bool,
 
-    /// 默认端点名称（凭据未显式指定 endpoint 时使用，默认 "ide"）
+    /// 默认端点名称（凭据未显式指定 endpoint 时使用，默认 "aws"）
     #[serde(default = "default_endpoint")]
     pub default_endpoint: String,
 
@@ -195,7 +195,7 @@ fn default_extract_thinking() -> bool {
 }
 
 fn default_endpoint() -> String {
-    crate::kiro::endpoint::ide::IDE_ENDPOINT_NAME.to_string()
+    crate::kiro::endpoint::aws::AWS_ENDPOINT_NAME.to_string()
 }
 
 impl Default for Config {
