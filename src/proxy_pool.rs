@@ -331,6 +331,10 @@ pub struct ProxyEntry {
     /// 挂载的凭据 ID 列表（空 = 空闲）
     #[serde(default)]
     pub assignments: Vec<u64>,
+    /// 释放序号：每次释放凭据时递增赋值，用于 LRU 轮转。
+    /// 0 = 从未使用/最久未碰 → 分配时优先；越大 = 释放越晚 → 排队尾。
+    #[serde(default)]
+    pub released_seq: u64,
     /// 最近一次探测结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_check: Option<ProbeResult>,
@@ -393,6 +397,9 @@ struct ProxyPoolData {
     proxies: Vec<ProxyEntry>,
     #[serde(default)]
     next_id: u64,
+    /// 释放序号自增计数（LRU 轮转用），随池持久化
+    #[serde(default)]
+    release_seq: u64,
 }
 
 /// 预占句柄：分配成功但尚未提交
@@ -627,6 +634,7 @@ impl ProxyPool {
             assignments: Vec::new(),
             last_check: None,
             reserved: Vec::new(),
+            released_seq: 0,
         };
         d.proxies.push(entry.clone());
         Self::persist(&d, &self.path)?;
@@ -790,11 +798,12 @@ impl ProxyPool {
         if candidates.is_empty() {
             return None;
         }
-        // 挑负载最低（含预占），tie 用 id 稳定
+        // 挑负载最低（含预占）；tie 用 released_seq 最小优先（LRU：从未用/最久未碰的排前，刚释放的排队尾），再用 id 稳定
         let chosen = candidates.into_iter().min_by(|&a, &b| {
             d.proxies[a]
                 .load()
                 .cmp(&d.proxies[b].load())
+                .then(d.proxies[a].released_seq.cmp(&d.proxies[b].released_seq))
                 .then(d.proxies[a].id.cmp(&d.proxies[b].id))
         })?;
         let reused = d.proxies[chosen].load() > 0;
@@ -868,14 +877,19 @@ impl ProxyPool {
         }
     }
 
-    /// 按 credId 释放（删除凭据时调用）
+    /// 按 credId 释放（删除凭据时调用）。释放的代理递增写 released_seq，排到轮转队尾。
     pub fn release_by_cred(&self, cred_id: u64) -> usize {
         let mut d = self.inner.lock();
         let mut released = 0;
-        for p in d.proxies.iter_mut() {
-            let before = p.assignments.len();
-            p.assignments.retain(|&c| c != cred_id);
-            released += before - p.assignments.len();
+        for i in 0..d.proxies.len() {
+            let before = d.proxies[i].assignments.len();
+            d.proxies[i].assignments.retain(|&c| c != cred_id);
+            if d.proxies[i].assignments.len() < before {
+                released += before - d.proxies[i].assignments.len();
+                d.release_seq += 1;
+                let seq = d.release_seq;
+                d.proxies[i].released_seq = seq;
+            }
         }
         if released > 0 {
             if let Err(e) = Self::persist(&d, &self.path) {
@@ -1160,6 +1174,40 @@ mod tests {
         assert!(validate_probe_url("https://169.254.169.254/latest/meta-data").is_err());
         assert!(validate_probe_url("https://[::1]/x").is_err());
         assert!(validate_probe_url("https://172.16.0.1/x").is_err());
+    }
+
+    #[test]
+    fn test_reserve_auto_lru_released_goes_to_tail() {
+        let p = pool();
+        add(&p, "http://a.example:1"); // id1
+        add(&p, "http://b.example:2"); // id2
+        add(&p, "http://c.example:3"); // id3
+        // 全部空闲：依次分到 id1/id2/id3
+        let r1 = p.reserve_auto(&[]).unwrap();
+        assert_eq!(r1.proxy.id, 1);
+        p.commit_reservation(r1.token, 100).unwrap();
+        let r2 = p.reserve_auto(&[]).unwrap();
+        assert_eq!(r2.proxy.id, 2);
+        p.commit_reservation(r2.token, 101).unwrap();
+        let r3 = p.reserve_auto(&[]).unwrap();
+        assert_eq!(r3.proxy.id, 3);
+        p.commit_reservation(r3.token, 102).unwrap();
+        // 释放 id1(cred100) → id1 空闲但 released_seq=1
+        assert_eq!(p.release_by_cred(100), 1);
+        // 再释放 id2(cred101) → id2 空闲且 released_seq=2（比 id1 晚）
+        assert_eq!(p.release_by_cred(101), 1);
+        // 下次分配：id1/id2 都空闲(load=0)，id1 released_seq 小 → 先选 id1(最久未碰)
+        let r4 = p.reserve_auto(&[]).unwrap();
+        assert_eq!(r4.proxy.id, 1, "释放最早的 id1 应最先被重用");
+        p.commit_reservation(r4.token, 200).unwrap();
+        // 再分配 → id2(released_seq=2) 比 id1(刚重用) 靠前
+        let r5 = p.reserve_auto(&[]).unwrap();
+        assert_eq!(r5.proxy.id, 2, "次早释放的 id2 其次");
+        p.commit_reservation(r5.token, 201).unwrap();
+        // 释放 id1(cred200) → released_seq=3，现在只剩 id1 空闲，下次必选 id1
+        assert_eq!(p.release_by_cred(200), 1);
+        let r6 = p.reserve_auto(&[]).unwrap();
+        assert_eq!(r6.proxy.id, 1, "唤一空闲 IP 仍可被选");
     }
 
     #[test]
