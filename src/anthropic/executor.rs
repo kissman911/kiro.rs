@@ -50,27 +50,10 @@ impl SinglePhaseExecutor {
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
 
-        let call_ctx = match self
-            .provider
-            .token_manager()
-            .acquire_context(Some(input.model))
-            .await
-        {
-            Ok(ctx) => ctx,
-            Err(e) => return map_provider_error(e),
-        };
-        let request_body = match attach_profile_arn(
-            input.request_body,
-            call_ctx.credentials.profile_arn.as_deref(),
-        ) {
-            Ok(body) => body,
-            Err(e) => return map_provider_error(e.into()),
-        };
-        let response = match self
-            .provider
-            .call_api_stream_with_context(&call_ctx, &request_body)
-            .await
-        {
+        // 走带多凭据故障转移的 call_api_stream：遇 401/403/402/429/5xx 自动切号重试，
+        // 所有凭据都失败才把错误抛给终端（对用户尽量无感）。profileArn 由 endpoint 的
+        // transform_api_body 按选中凭据注入，无需在此手动 attach。
+        let response = match self.provider.call_api_stream(input.request_body).await {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -116,25 +99,8 @@ impl SinglePhaseExecutor {
         tool_name_map: HashMap<String, String>,
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
-        let call_ctx = match self
-            .provider
-            .token_manager()
-            .acquire_context(Some(model))
-            .await
-        {
-            Ok(ctx) => ctx,
-            Err(e) => return map_provider_error(e),
-        };
-        let request_body =
-            match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
-                Ok(body) => body,
-                Err(e) => return map_provider_error(e.into()),
-            };
-        let response = match self
-            .provider
-            .call_api_with_context(&call_ctx, &request_body)
-            .await
-        {
+        // 带故障转移的非流式调用：切号重试直到成功或所有凭据用尽。
+        let response = match self.provider.call_api(request_body).await {
             Ok(resp) => resp,
             Err(e) => return map_provider_error(e),
         };
@@ -171,101 +137,120 @@ impl TwoPhaseExecutor {
             .find(|p| matches!(p.phase, PhaseKind::MainModel))
             .unwrap_or_else(|| &plan.phases[0]);
 
-        let call_ctx = match self
-            .provider
-            .token_manager()
-            .acquire_context(Some(&main_phase.model_id))
-            .await
-        {
-            Ok(ctx) => ctx,
-            Err(e) => return map_provider_error(e),
-        };
+        // 多凭据故障转移：预检/主请求遇凭据级错误（401/403/402/429/风控等）就切下一把号重试，
+        // 所有凭据都失败才把错误抛给终端（对用户尽量无感）。
+        let total = self.provider.token_manager().total_count().max(1);
+        let mut last_error: Option<anyhow::Error> = None;
 
-        let main_request_body = match attach_profile_arn(
-            input.request_body,
-            call_ctx.credentials.profile_arn.as_deref(),
-        ) {
-            Ok(body) => body,
-            Err(e) => return map_provider_error(e.into()),
-        };
-
-        if let Ok(preflight_body_raw) = build_preflight_request_body(input.request_body, plan) {
-            let preflight_body = attach_profile_arn(
-                &preflight_body_raw,
-                call_ctx.credentials.profile_arn.as_deref(),
-            )
-            .unwrap_or(preflight_body_raw);
-            tracing::debug!(
-                conversation_id = %plan.identity.conversation_id,
-                credential_id = call_ctx.id,
-                preflight_model = "simple-task",
-                main_model = %main_phase.model_id,
-                "Executing preflight phase"
-            );
-            match self
+        for _attempt in 0..total {
+            let call_ctx = match self
                 .provider
-                .call_api_stream_with_context(&call_ctx, &preflight_body)
+                .token_manager()
+                .acquire_context(Some(&main_phase.model_id))
                 .await
             {
-                Ok(resp) => {
-                    if let Err(err) = resp.bytes().await {
-                        tracing::warn!("preflight response consume failed: {}", err);
-                    }
+                Ok(ctx) => ctx,
+                Err(e) => {
+                    last_error = Some(e);
+                    break;
                 }
-                Err(err) => {
-                    if should_abort_on_preflight_error(&err) {
+            };
+
+            let main_request_body = match attach_profile_arn(
+                input.request_body,
+                call_ctx.credentials.profile_arn.as_deref(),
+            ) {
+                Ok(body) => body,
+                Err(e) => return map_provider_error(e.into()),
+            };
+
+            if let Ok(preflight_body_raw) = build_preflight_request_body(input.request_body, plan) {
+                let preflight_body = attach_profile_arn(
+                    &preflight_body_raw,
+                    call_ctx.credentials.profile_arn.as_deref(),
+                )
+                .unwrap_or(preflight_body_raw);
+                tracing::debug!(
+                    conversation_id = %plan.identity.conversation_id,
+                    credential_id = call_ctx.id,
+                    preflight_model = "simple-task",
+                    main_model = %main_phase.model_id,
+                    "Executing preflight phase"
+                );
+                match self
+                    .provider
+                    .call_api_stream_with_context(&call_ctx, &preflight_body)
+                    .await
+                {
+                    Ok(resp) => {
+                        if let Err(err) = resp.bytes().await {
+                            tracing::warn!("preflight response consume failed: {}", err);
+                        }
+                    }
+                    Err(err) => {
+                        if should_abort_on_preflight_error(&err) {
+                            tracing::warn!("preflight 凭据级错误，切换凭据重试: {}", err);
+                            last_error = Some(err);
+                            continue;
+                        }
                         tracing::warn!(
-                            "preflight phase failed with credential-scoped error, aborting main phase: {}",
+                            "preflight phase failed, continuing with main phase: {}",
                             err
                         );
-                        return map_provider_error(err);
                     }
-                    tracing::warn!(
-                        "preflight phase failed, continuing with main phase: {}",
-                        err
-                    );
                 }
             }
+
+            let response = match self
+                .provider
+                .call_api_stream_with_context(&call_ctx, &main_request_body)
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if is_credential_failover_error(&e) {
+                        tracing::warn!("主请求凭据级错误，切换凭据重试: {}", e);
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return map_provider_error(e);
+                }
+            };
+
+            let body = match input.stream_mode {
+                StreamMode::Direct => {
+                    let mut ctx = StreamContext::new_with_thinking(
+                        input.model,
+                        input.input_tokens,
+                        input.thinking_enabled,
+                        input.tool_name_map,
+                    );
+                    let initial_events = ctx.generate_initial_events();
+                    Body::from_stream(create_sse_stream(response, ctx, initial_events))
+                }
+                StreamMode::Buffered => {
+                    let ctx = BufferedStreamContext::new(
+                        input.model,
+                        input.input_tokens,
+                        input.thinking_enabled,
+                        input.tool_name_map,
+                    );
+                    Body::from_stream(create_buffered_sse_stream(response, ctx))
+                }
+            };
+
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .header(header::CACHE_CONTROL, "no-cache")
+                .header(header::CONNECTION, "keep-alive")
+                .body(body)
+                .unwrap();
         }
 
-        let response = match self
-            .provider
-            .call_api_stream_with_context(&call_ctx, &main_request_body)
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => return map_provider_error(e),
-        };
-
-        let body = match input.stream_mode {
-            StreamMode::Direct => {
-                let mut ctx = StreamContext::new_with_thinking(
-                    input.model,
-                    input.input_tokens,
-                    input.thinking_enabled,
-                    input.tool_name_map,
-                );
-                let initial_events = ctx.generate_initial_events();
-                Body::from_stream(create_sse_stream(response, ctx, initial_events))
-            }
-            StreamMode::Buffered => {
-                let ctx = BufferedStreamContext::new(
-                    input.model,
-                    input.input_tokens,
-                    input.thinking_enabled,
-                    input.tool_name_map,
-                );
-                Body::from_stream(create_buffered_sse_stream(response, ctx))
-            }
-        };
-
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .header(header::CACHE_CONTROL, "no-cache")
-            .header(header::CONNECTION, "keep-alive")
-            .body(body)
-            .unwrap()
+        map_provider_error(
+            last_error.unwrap_or_else(|| anyhow::anyhow!("所有凭据均请求失败")),
+        )
     }
 
     pub async fn execute_non_stream(
@@ -285,78 +270,97 @@ impl TwoPhaseExecutor {
             .find(|p| matches!(p.phase, PhaseKind::MainModel))
             .unwrap_or_else(|| &plan.phases[0]);
 
-        let call_ctx = match self
-            .provider
-            .token_manager()
-            .acquire_context(Some(&main_phase.model_id))
-            .await
-        {
-            Ok(ctx) => ctx,
-            Err(e) => return map_provider_error(e),
-        };
+        // 多凭据故障转移：预检/主请求遇凭据级错误就切下一把号重试，
+        // 所有凭据都失败才把错误抛给终端。
+        let total = self.provider.token_manager().total_count().max(1);
+        let mut last_error: Option<anyhow::Error> = None;
 
-        let main_request_body =
-            match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
-                Ok(body) => body,
-                Err(e) => return map_provider_error(e.into()),
-            };
-
-        if let Ok(preflight_body_raw) = build_preflight_request_body(request_body, plan) {
-            let preflight_body = attach_profile_arn(
-                &preflight_body_raw,
-                call_ctx.credentials.profile_arn.as_deref(),
-            )
-            .unwrap_or(preflight_body_raw);
-            tracing::debug!(
-                conversation_id = %plan.identity.conversation_id,
-                credential_id = call_ctx.id,
-                preflight_model = "simple-task",
-                main_model = %main_phase.model_id,
-                "Executing non-stream preflight phase"
-            );
-            match self
+        for _attempt in 0..total {
+            let call_ctx = match self
                 .provider
-                .call_api_with_context(&call_ctx, &preflight_body)
+                .token_manager()
+                .acquire_context(Some(&main_phase.model_id))
                 .await
             {
-                Ok(resp) => {
-                    if let Err(err) = resp.bytes().await {
-                        tracing::warn!("preflight response consume failed: {}", err);
-                    }
+                Ok(ctx) => ctx,
+                Err(e) => {
+                    last_error = Some(e);
+                    break;
                 }
-                Err(err) => {
-                    if should_abort_on_preflight_error(&err) {
+            };
+
+            let main_request_body =
+                match attach_profile_arn(request_body, call_ctx.credentials.profile_arn.as_deref()) {
+                    Ok(body) => body,
+                    Err(e) => return map_provider_error(e.into()),
+                };
+
+            if let Ok(preflight_body_raw) = build_preflight_request_body(request_body, plan) {
+                let preflight_body = attach_profile_arn(
+                    &preflight_body_raw,
+                    call_ctx.credentials.profile_arn.as_deref(),
+                )
+                .unwrap_or(preflight_body_raw);
+                tracing::debug!(
+                    conversation_id = %plan.identity.conversation_id,
+                    credential_id = call_ctx.id,
+                    preflight_model = "simple-task",
+                    main_model = %main_phase.model_id,
+                    "Executing non-stream preflight phase"
+                );
+                match self
+                    .provider
+                    .call_api_with_context(&call_ctx, &preflight_body)
+                    .await
+                {
+                    Ok(resp) => {
+                        if let Err(err) = resp.bytes().await {
+                            tracing::warn!("preflight response consume failed: {}", err);
+                        }
+                    }
+                    Err(err) => {
+                        if should_abort_on_preflight_error(&err) {
+                            tracing::warn!("preflight 凭据级错误，切换凭据重试: {}", err);
+                            last_error = Some(err);
+                            continue;
+                        }
                         tracing::warn!(
-                            "preflight phase failed with credential-scoped error, aborting main phase: {}",
+                            "preflight phase failed, continuing with main phase: {}",
                             err
                         );
-                        return map_provider_error(err);
                     }
-                    tracing::warn!(
-                        "preflight phase failed, continuing with main phase: {}",
-                        err
-                    );
                 }
             }
+
+            let response = match self
+                .provider
+                .call_api_with_context(&call_ctx, &main_request_body)
+                .await
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if is_credential_failover_error(&e) {
+                        tracing::warn!("主请求凭据级错误，切换凭据重试: {}", e);
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return map_provider_error(e);
+                }
+            };
+
+            return build_non_stream_response_from_upstream(
+                response,
+                model,
+                input_tokens,
+                thinking_enabled,
+                tool_name_map,
+            )
+            .await;
         }
 
-        let response = match self
-            .provider
-            .call_api_with_context(&call_ctx, &main_request_body)
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => return map_provider_error(e),
-        };
-
-        build_non_stream_response_from_upstream(
-            response,
-            model,
-            input_tokens,
-            thinking_enabled,
-            tool_name_map,
+        map_provider_error(
+            last_error.unwrap_or_else(|| anyhow::anyhow!("所有凭据均请求失败")),
         )
-        .await
     }
 }
 
@@ -447,4 +451,26 @@ fn should_abort_on_preflight_error(err: &anyhow::Error) -> bool {
         || msg.contains(" 402 ")
         || msg.contains("MONTHLY_REQUEST_COUNT")
         || msg.contains("所有凭据已用尽")
+}
+
+/// 判定一个主请求错误是否属于“凭据级”——值得切下一把号重试。
+/// 包含 401/403(凭据/权限)、402 额度用尽、429(风控/限流)、408、以及 5xx 上游瞬态错误。
+/// 400 等硬错误(请求本身问题)切号无意义，不重试；“所有凭据已用尽”也不再循环。
+fn is_credential_failover_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string();
+    if msg.contains("所有凭据已用尽") || msg.contains(" 400 ") {
+        return false;
+    }
+    msg.contains(" 401 ")
+        || msg.contains(" 403 ")
+        || msg.contains(" 402 ")
+        || msg.contains(" 408 ")
+        || msg.contains(" 429 ")
+        || msg.contains(" 500 ")
+        || msg.contains(" 502 ")
+        || msg.contains(" 503 ")
+        || msg.contains(" 504 ")
+        || msg.contains("MONTHLY_REQUEST_COUNT")
+        || msg.contains("suspicious")
+        || msg.contains("USER_REQUEST_RATE_EXCEEDED")
 }
