@@ -45,6 +45,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchRefreshProgress, setBatchRefreshProgress] = useState({ current: 0, total: 0 })
   const cancelVerifyRef = useRef(false)
+  // 已自动拉过用量的凭据 id，避免重复请求
+  const autoBalanceRequestedRef = useRef<Set<number>>(new Set())
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 12
   const [darkMode, setDarkMode] = useState(() => {
@@ -111,7 +113,71 @@ export function Dashboard({ onLogout }: DashboardProps) {
       })
       return next.size === prev.size ? prev : next
     })
+
+    // 同步清理自动拉取记录，凭据删除后可重新拉
+    autoBalanceRequestedRef.current.forEach(id => {
+      if (!validIds.has(id)) {
+        autoBalanceRequestedRef.current.delete(id)
+      }
+    })
   }, [data?.credentials])
+
+  // 自动加载当前页凭据的用量，不用手动点“查询用量”，进度条才能直接显示
+  const currentIdsKey = currentCredentials.map(credential => credential.id).join(',')
+  useEffect(() => {
+    const ids = currentCredentials
+      .map(credential => credential.id)
+      .filter(id => !balanceMap.has(id) && !autoBalanceRequestedRef.current.has(id))
+
+    if (ids.length === 0) return
+
+    ids.forEach(id => autoBalanceRequestedRef.current.add(id))
+
+    let cancelled = false
+    let cursor = 0
+
+    const worker = async () => {
+      while (cursor < ids.length && !cancelled) {
+        const id = ids[cursor]
+        cursor += 1
+
+        setLoadingBalanceIds(prev => {
+          const next = new Set(prev)
+          next.add(id)
+          return next
+        })
+
+        try {
+          const balance = await getCredentialBalance(id)
+          if (!cancelled) {
+            setBalanceMap(prev => {
+              const next = new Map(prev)
+              next.set(id, balance)
+              return next
+            })
+          }
+        } catch {
+          // 失败允许下次进入该页时重试
+          autoBalanceRequestedRef.current.delete(id)
+        } finally {
+          setLoadingBalanceIds(prev => {
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        }
+      }
+    }
+
+    // 控制并发，避免一次性打满上游
+    const concurrency = Math.min(3, ids.length)
+    void Promise.all(Array.from({ length: concurrency }, worker))
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentIdsKey])
 
   const toggleDarkMode = () => {
     setDarkMode(!darkMode)
