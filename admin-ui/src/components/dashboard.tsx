@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Trash2, RotateCcw, CheckCircle2, GitBranch, Settings2, Network, Car } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -24,6 +24,9 @@ interface DashboardProps {
   onLogout: () => void
 }
 
+// 用量定时自动刷新间隔（5 分钟）
+const BALANCE_REFRESH_INTERVAL_MS = 5 * 60 * 1000
+
 export function Dashboard({ onLogout }: DashboardProps) {
   const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
   const [balanceDialogOpen, setBalanceDialogOpen] = useState(false)
@@ -47,6 +50,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const cancelVerifyRef = useRef(false)
   // 已自动拉过用量的凭据 id，避免重复请求
   const autoBalanceRequestedRef = useRef<Set<number>>(new Set())
+  // 防重入：上一轮拉取未完成时跳过本轮定时刷新
+  const balanceFetchingRef = useRef(false)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 12
   const [darkMode, setDarkMode] = useState(() => {
@@ -122,62 +127,76 @@ export function Dashboard({ onLogout }: DashboardProps) {
     })
   }, [data?.credentials])
 
-  // 自动加载当前页凭据的用量，不用手动点“查询用量”，进度条才能直接显示
+  // 当前页凭据 id：既用于首次自动加载，也用于定时刷新
   const currentIdsKey = currentCredentials.map(credential => credential.id).join(',')
-  useEffect(() => {
-    const ids = currentCredentials
-      .map(credential => credential.id)
-      .filter(id => !balanceMap.has(id) && !autoBalanceRequestedRef.current.has(id))
+  const currentIdsRef = useRef<number[]>([])
+  currentIdsRef.current = currentCredentials.map(credential => credential.id)
 
-    if (ids.length === 0) return
+  // 拉取用量：silent=true 时不显示加载态，避免定时刷新导致进度条闪烁
+  const fetchBalances = useCallback(async (ids: number[], silent = false) => {
+    if (ids.length === 0 || balanceFetchingRef.current) return
+    balanceFetchingRef.current = true
 
-    ids.forEach(id => autoBalanceRequestedRef.current.add(id))
-
-    let cancelled = false
     let cursor = 0
-
     const worker = async () => {
-      while (cursor < ids.length && !cancelled) {
+      while (cursor < ids.length) {
         const id = ids[cursor]
         cursor += 1
 
-        setLoadingBalanceIds(prev => {
-          const next = new Set(prev)
-          next.add(id)
-          return next
-        })
+        if (!silent) {
+          setLoadingBalanceIds(prev => {
+            const next = new Set(prev)
+            next.add(id)
+            return next
+          })
+        }
 
         try {
           const balance = await getCredentialBalance(id)
-          if (!cancelled) {
-            setBalanceMap(prev => {
-              const next = new Map(prev)
-              next.set(id, balance)
+          autoBalanceRequestedRef.current.add(id)
+          setBalanceMap(prev => {
+            const next = new Map(prev)
+            next.set(id, balance)
+            return next
+          })
+        } catch {
+          // 失败不标记已拉取，下轮定时刷新会重试
+          autoBalanceRequestedRef.current.delete(id)
+        } finally {
+          if (!silent) {
+            setLoadingBalanceIds(prev => {
+              const next = new Set(prev)
+              next.delete(id)
               return next
             })
           }
-        } catch {
-          // 失败允许下次进入该页时重试
-          autoBalanceRequestedRef.current.delete(id)
-        } finally {
-          setLoadingBalanceIds(prev => {
-            const next = new Set(prev)
-            next.delete(id)
-            return next
-          })
         }
       }
     }
 
     // 控制并发，避免一次性打满上游
     const concurrency = Math.min(3, ids.length)
-    void Promise.all(Array.from({ length: concurrency }, worker))
+    await Promise.all(Array.from({ length: concurrency }, worker))
 
-    return () => {
-      cancelled = true
-    }
+    balanceFetchingRef.current = false
+  }, [])
+
+  // 首次进入 / 翻页：补齐还没拉过的用量，显示加载态
+  useEffect(() => {
+    const ids = currentIdsRef.current.filter(id => !autoBalanceRequestedRef.current.has(id))
+    void fetchBalances(ids, false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentIdsKey])
+
+  // 定时自动刷新：每 5 分钟静默刷新当前页用量，页面在后台时跳过
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      void fetchBalances(currentIdsRef.current, true)
+    }, BALANCE_REFRESH_INTERVAL_MS)
+
+    return () => clearInterval(timer)
+  }, [fetchBalances])
 
   const toggleDarkMode = () => {
     setDarkMode(!darkMode)
