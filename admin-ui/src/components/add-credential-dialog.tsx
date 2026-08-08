@@ -421,7 +421,7 @@ const [proxySource, setProxySource] = useState<'auto' | 'pool' | 'manual'>('auto
               </label>
               <Input
                 id="endpoint"
-                placeholder="留空使用默认端点（如 ide / cli）"
+                placeholder="留空使用默认端点（默认 aws，可填 ide / cli）"
                 value={endpoint}
                 onChange={(e) => setEndpoint(e.target.value)}
                 disabled={isPending}

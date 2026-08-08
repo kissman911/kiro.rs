@@ -900,8 +900,7 @@ mod tests {
         let config = Config::default();
         let tm = Arc::new(MultiTokenManager::new(config, vec![], None, None, false).expect("tm"));
         let pool = Arc::new(ProxyPool::load(None, TlsBackend::Rustls));
-        let carpool = Arc::new(crate::carpool::Carpool::load(None));
-        AdminService::new(tm, Vec::<String>::new(), pool, carpool)
+        AdminService::new(tm, Vec::<String>::new(), pool)
     }
 
     #[test]
