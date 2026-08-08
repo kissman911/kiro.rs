@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Progress } from '@/components/ui/progress'
 import {
   Dialog,
   DialogContent,
@@ -602,26 +603,37 @@ export function CredentialCard({
                 <span className="font-mono font-medium">{credential.maskedApiKey}</span>
               </div>
             )}
-            <div className="col-span-2">
-              <span className="text-muted-foreground">剩余用量：</span>
-              {loadingBalance ? (
-                <span className="text-sm ml-1">
-                  <Loader2 className="inline w-3 h-3 animate-spin" /> 加载中...
-                </span>
-              ) : balance ? (
-                <span className="font-medium ml-1">
-                  {balance.remaining.toFixed(2)} / {balance.effectiveLimit.toFixed(2)}
-                  {balance.allowOverage && (
-                    <span className="text-xs text-purple-600 ml-1">
-                      原限额 {balance.usageLimit.toFixed(2)}，超额 +{balance.overageAllowance.toFixed(0)}
-                    </span>
-                  )}
-                  <span className="text-xs text-muted-foreground ml-1">
-                    ({(100 - balance.usagePercentage).toFixed(1)}% 剩余)
+            <div className="col-span-2 space-y-1.5">
+              <div className="flex flex-wrap items-baseline gap-x-1">
+                <span className="text-muted-foreground">剩余用量：</span>
+                {loadingBalance ? (
+                  <span className="text-sm ml-1">
+                    <Loader2 className="inline w-3 h-3 animate-spin" /> 加载中...
                   </span>
-                </span>
-              ) : (
-                <span className="text-sm text-muted-foreground ml-1">未知</span>
+                ) : balance ? (
+                  <span className="font-medium ml-1">
+                    {balance.remaining.toFixed(2)} / {balance.effectiveLimit.toFixed(2)}
+                    {balance.allowOverage && (
+                      <span className="text-xs text-purple-600 ml-1">
+                        原限额 {balance.usageLimit.toFixed(2)}，超额 +{balance.overageAllowance.toFixed(0)}
+                      </span>
+                    )}
+                    <span className="text-xs text-muted-foreground ml-1">
+                      ({(100 - balance.usagePercentage).toFixed(1)}% 剩余)
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-sm text-muted-foreground ml-1">未知</span>
+                )}
+              </div>
+              {!loadingBalance && balance && (
+                <div className="space-y-0.5">
+                  <Progress value={Math.min(Math.max(balance.usagePercentage, 0), 100)} className="h-2" />
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
+                    <span>已用 {balance.usagePercentage.toFixed(1)}%</span>
+                    <span>{(balance.effectiveLimit - balance.remaining).toFixed(2)} / {balance.effectiveLimit.toFixed(2)}</span>
+                  </div>
+                </div>
               )}
             </div>
             <div className="col-span-2 flex items-center gap-2">
