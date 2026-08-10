@@ -332,14 +332,19 @@ pub struct CreditLedgerResponse {
     pub current_round: RoundMeta,
     /// 当前轮各凭据明细（存活优先，按消耗降序）
     pub entries: Vec<CreditEntry>,
-    /// 本轮「我」消耗总积分
+    /// 本轮「我」消耗总积分（上游 meteringEvent 真值累加，非估算）
     pub my_total: f64,
-    /// 本轮「他人」消耗总积分（拼车同池其他人）
+    /// 本轮「他人」消耗总积分（上游用量增长扣除我的 metering 后的余量）
     pub others_total: f64,
     /// 本轮合计
     pub total: f64,
     /// 本轮我们自己的成功请求数
     pub my_requests: u64,
+    /// 本轮收到 metering 事件的次数（计价样本数）
+    pub metered_requests: u64,
+    /// 我的平均单价（积分/请求），无样本时 None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub my_avg_cost: Option<f64>,
     /// 存活凭据数
     pub alive_count: usize,
     /// 死号数（已禁用/已删除但账仍在本轮）

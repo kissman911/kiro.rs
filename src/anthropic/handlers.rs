@@ -553,8 +553,10 @@ async fn handle_stream_request(
     tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body).await {
-        Ok(resp) => resp,
+    // tracked 版本额外返回实际服务本次请求的凭据 ID，用于把上游 meteringEvent
+    // 的真实积分消耗记到对应凭据账上。
+    let (response, cred_id) = match provider.call_api_stream_tracked(request_body).await {
+        Ok(v) => v,
         Err(e) => return map_provider_error(e),
     };
 
@@ -566,7 +568,7 @@ async fn handle_stream_request(
     let initial_events = ctx.generate_initial_events();
 
     // 创建 SSE 流
-    let stream = create_sse_stream(response, ctx, initial_events);
+    let stream = create_sse_stream(response, ctx, initial_events, cred_id);
 
     // 返回 SSE 响应
     Response::builder()
@@ -586,11 +588,22 @@ fn create_ping_sse() -> Bytes {
     Bytes::from("event: ping\ndata: {\"type\": \"ping\"}\n\n")
 }
 
+/// 截获上游 `meteringEvent` 的真实积分消耗，记到对应凭据账上
+///
+/// 只有我们自己发出的请求才会走到这里，所以累加值就是精确的「我消耗」，
+/// 不需要任何归属猜测（拼车号上其他人的消耗根本不会出现在我们的流里）。
+fn record_metering_if_any(cred_id: u64, event: &Event) {
+    if let Event::Metering(m) = event {
+        crate::credit_ledger::record_metering_global(cred_id, m.usage);
+    }
+}
+
 /// 创建 SSE 事件流
 pub(crate) fn create_sse_stream(
     response: reqwest::Response,
     ctx: StreamContext,
     initial_events: Vec<SseEvent>,
+    cred_id: u64,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     // 先发送初始事件
     let initial_stream = stream::iter(
@@ -604,7 +617,7 @@ pub(crate) fn create_sse_stream(
 
     let processing_stream = stream::unfold(
         (body_stream, ctx, EventStreamDecoder::new(), false, interval(Duration::from_secs(PING_INTERVAL_SECS))),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
+        move |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
             if finished {
                 return None;
             }
@@ -625,6 +638,7 @@ pub(crate) fn create_sse_stream(
                                 match result {
                                     Ok(frame) => {
                                         if let Ok(event) = Event::from_frame(frame) {
+                                            record_metering_if_any(cred_id, &event);
                                             let sse_events = ctx.process_kiro_event(&event);
                                             events.extend(sse_events);
                                         }
@@ -687,6 +701,7 @@ pub(crate) async fn build_non_stream_response_from_upstream(
     input_tokens: i32,
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
+    cred_id: u64,
 ) -> Response {
     // 读取响应体
     let body_bytes = match response.bytes().await {
@@ -725,6 +740,7 @@ pub(crate) async fn build_non_stream_response_from_upstream(
         match result {
             Ok(frame) => {
                 if let Ok(event) = Event::from_frame(frame) {
+                    record_metering_if_any(cred_id, &event);
                     match event {
                         Event::AssistantResponse(resp) => {
                             text_content.push_str(&resp.content);
@@ -867,8 +883,8 @@ pub(crate) async fn handle_non_stream_request(
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
-    let response = match provider.call_api(request_body).await {
-        Ok(resp) => resp,
+    let (response, cred_id) = match provider.call_api_tracked(request_body).await {
+        Ok(v) => v,
         Err(e) => return map_provider_error(e),
     };
 
@@ -878,6 +894,7 @@ pub(crate) async fn handle_non_stream_request(
         input_tokens,
         thinking_enabled,
         tool_name_map,
+        cred_id,
     )
     .await
 }
@@ -1157,8 +1174,8 @@ async fn handle_stream_request_buffered(
     tool_name_map: std::collections::HashMap<String, String>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body).await {
-        Ok(resp) => resp,
+    let (response, cred_id) = match provider.call_api_stream_tracked(request_body).await {
+        Ok(v) => v,
         Err(e) => return map_provider_error(e),
     };
 
@@ -1171,7 +1188,7 @@ async fn handle_stream_request_buffered(
     );
 
     // 创建缓冲 SSE 流
-    let stream = create_buffered_sse_stream(response, ctx);
+    let stream = create_buffered_sse_stream(response, ctx, cred_id);
 
     // 返回 SSE 响应
     Response::builder()
@@ -1193,6 +1210,7 @@ async fn handle_stream_request_buffered(
 pub(crate) fn create_buffered_sse_stream(
     response: reqwest::Response,
     ctx: BufferedStreamContext,
+    cred_id: u64,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let body_stream = response.bytes_stream();
 
@@ -1204,7 +1222,7 @@ pub(crate) fn create_buffered_sse_stream(
             false,
             interval(Duration::from_secs(PING_INTERVAL_SECS)),
         ),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
+        move |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
             if finished {
                 return None;
             }
@@ -1235,6 +1253,7 @@ pub(crate) fn create_buffered_sse_stream(
                                     match result {
                                         Ok(frame) => {
                                             if let Ok(event) = Event::from_frame(frame) {
+                                                record_metering_if_any(cred_id, &event);
                                                 // 缓冲事件（复用 StreamContext 的处理逻辑）
                                                 ctx.process_and_buffer(&event);
                                             }

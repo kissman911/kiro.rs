@@ -1,12 +1,16 @@
 //! 积分消耗账本（kirors-b 专属）
 //!
-//! Kiro 上游只返回「当前累计用量」快照（`current_usage`），没有历史。
-//! 号一删、一换、月度重置，数据就归零。本模块把快照差分成账本：
+//! 「我消耗」取自上游流式响应里的 `meteringEvent`（`{"unit":"credit","usage":1.41}`），
+//! 是上游逐次下发的**真值**，不是估算。只有我们自己发出的请求才会经过本服务的事件
+//! 解析器，所以 metering 累加值天然就是「我的」那部分，不需要任何归属猜测。
+//!
+//! 「他人消耗」（拼车同池其他人）用差值反推：
+//! `others = 上游用量增长 - 本区间我的 metering`，负数归零。
+//!
+//! ⚠️ 历史教训：最初版本用「差分快照 + 看 success_count 猜归属」，在拼车号上高估约 35 倍
+//! （背景流量每分钟烧 100+ 积分，我们自己的消耗完全淹没在噪声里）。别再回到估算路子。
 //!
 //! - 每个凭据按**指纹**（apiKeyHash / refreshTokenHash）建账，凭据 ID 变了也能续上；
-//! - 每次采样算 `delta = current_usage - last_usage`，累加成消耗；
-//! - **我 / 他人拆分**：拼车号可能有别人在用。采样区间里我们自己的 `success_count`
-//!   涨了就把 delta 记到「我」，没涨但用量涨了就记到「他人」；
 //! - **轮次**（round）对应一轮车队。开新一轮时旧账归档，存活凭据以当前用量为新基线重开；
 //! - 凭据删除前由上层补一次终值采样，然后标记 `alive=false` 留在本轮账上，避免换号丢账。
 //!
@@ -14,6 +18,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -24,6 +30,29 @@ const MAX_ARCHIVED_ROUNDS: usize = 20;
 
 /// 用量回退判定容差：上游浮点抖动不算重置
 const RESET_EPSILON: f64 = 0.5;
+
+/// 待入账 metering 的落盘防抖间隔（避免每个请求都写磁盘）
+const PENDING_SAVE_DEBOUNCE: Duration = Duration::from_secs(30);
+
+/// 全局账本句柄
+///
+/// metering 事件在请求解析路径上到达（`src/anthropic`），那里拿不到 AdminService，
+/// 用全局句柄把真值送回账本。main.rs 启动时注册一次。
+static GLOBAL_LEDGER: OnceLock<Arc<CreditLedger>> = OnceLock::new();
+
+/// 注册全局账本（main.rs 启动时调用一次）
+pub fn init_global(ledger: Arc<CreditLedger>) {
+    if GLOBAL_LEDGER.set(ledger).is_err() {
+        tracing::warn!("全局积分账本已注册过，忽略重复注册");
+    }
+}
+
+/// 记录一次上游 metering 真值（未注册全局账本时静默丢弃）
+pub fn record_metering_global(cred_id: u64, credits: f64) {
+    if let Some(l) = GLOBAL_LEDGER.get() {
+        l.record_metering(cred_id, credits);
+    }
+}
 
 /// 单个凭据在**当前轮次**的积分账
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,13 +78,16 @@ pub struct CreditEntry {
     pub usage_limit: f64,
     /// 上次采样时我们自己的成功请求数
     pub last_success_count: u64,
-    /// 本轮「我」消耗的积分
+    /// 本轮「我」消耗的积分（上游 meteringEvent 真值累加）
     pub my_credits: f64,
-    /// 本轮「他人」消耗的积分（拼车同池其他人）
+    /// 本轮「他人」消耗的积分（用量增长扣除我的 metering 后的余量）
     pub others_credits: f64,
-    /// 本轮我们自己的成功请求数增量
+    /// 本轮我们自己的成功请求数（按 success_count 差分）
     #[serde(default)]
     pub my_requests: u64,
+    /// 本轮收到 metering 事件的次数（每次请求通常 1 条）
+    #[serde(default)]
+    pub metered_requests: u64,
     /// 检测到用量重置的次数（月度重置 / 换号）
     #[serde(default)]
     pub resets: u32,
@@ -82,6 +114,15 @@ impl CreditEntry {
     /// 本轮总消耗（我 + 他人）
     pub fn total_credits(&self) -> f64 {
         self.my_credits + self.others_credits
+    }
+
+    /// 我的平均单价（积分/请求），无样本时 None
+    pub fn my_avg_cost(&self) -> Option<f64> {
+        if self.metered_requests == 0 {
+            None
+        } else {
+            Some(self.my_credits / self.metered_requests as f64)
+        }
     }
 }
 
@@ -120,6 +161,19 @@ impl ArchivedRound {
     }
 }
 
+/// 待入账的 metering（按凭据 ID 缓冲，采样时刷入对应指纹条目）
+///
+/// metering 事件在请求路径上到达，那里只知道凭据 ID；指纹要等采样时才能对上。
+/// 随账本一起落盘（防抖），重启不丢。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingMetering {
+    /// 累计积分
+    pub credits: f64,
+    /// 累计 metering 事件数
+    pub requests: u64,
+}
+
 /// 账本落盘结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +183,9 @@ pub struct LedgerData {
     /// 当前轮次的凭据账（key = fingerprint）
     #[serde(default)]
     pub entries: HashMap<String, CreditEntry>,
+    /// 待入账的 metering（key = 凭据 ID 字符串）
+    #[serde(default)]
+    pub pending_metering: HashMap<String, PendingMetering>,
     /// 历史轮次
     #[serde(default)]
     pub archived: Vec<ArchivedRound>,
@@ -155,6 +212,7 @@ impl Default for LedgerData {
                 source: None,
             },
             entries: HashMap::new(),
+            pending_metering: HashMap::new(),
             archived: Vec::new(),
             next_round_id: 2,
             last_sample_at: None,
@@ -180,9 +238,13 @@ pub struct SampleInput {
 pub struct SampleOutcome {
     pub fingerprint: String,
     pub cred_id: u64,
-    /// 本次增量归属：new / mine / others / reset / idle
+    /// 本次增量归属：new / mine / others / both / reset / idle
     pub attribution: &'static str,
+    /// 上游用量增长
     pub delta: f64,
+    /// 本区间我的精确消耗（metering 真值）
+    #[serde(default)]
+    pub metered: f64,
 }
 
 /// 采样汇总（Admin API 返回）
@@ -191,7 +253,9 @@ pub struct SampleOutcome {
 pub struct SampleReport {
     pub sampled: usize,
     pub failed: usize,
+    /// 本次入账的「我」消耗（metering 真值合计）
     pub my_delta: f64,
+    /// 本次入账的「他人」消耗
     pub others_delta: f64,
     pub outcomes: Vec<SampleOutcome>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -218,6 +282,8 @@ impl std::error::Error for LedgerError {}
 pub struct CreditLedger {
     inner: Mutex<LedgerData>,
     path: Option<PathBuf>,
+    /// 待入账 metering 最近一次落盘时间（防抖用）
+    last_pending_save: Mutex<Option<Instant>>,
 }
 
 impl CreditLedger {
@@ -230,6 +296,7 @@ impl CreditLedger {
         Self {
             inner: Mutex::new(data),
             path,
+            last_pending_save: Mutex::new(None),
         }
     }
 
@@ -315,7 +382,46 @@ impl CreditLedger {
         self.inner.lock().clone()
     }
 
+    /// 记录一次上游 metering 真值（请求路径调用，按凭据 ID 缓冲）
+    ///
+    /// 落盘做 30 秒防抖：请求量大时不至于每次都写磁盘，崩溃最多丢一个防抖窗口。
+    pub fn record_metering(&self, cred_id: u64, credits: f64) {
+        if !credits.is_finite() || credits <= 0.0 {
+            return;
+        }
+        let mut d = self.inner.lock();
+        let entry = d
+            .pending_metering
+            .entry(cred_id.to_string())
+            .or_default();
+        entry.credits += credits;
+        entry.requests += 1;
+        tracing::debug!(
+            "凭据 #{} metering +{:.6} 积分（待入账累计 {:.4} / {} 次）",
+            cred_id,
+            credits,
+            entry.credits,
+            entry.requests
+        );
+
+        let should_save = {
+            let mut last = self.last_pending_save.lock();
+            match *last {
+                Some(t) if t.elapsed() < PENDING_SAVE_DEBOUNCE => false,
+                _ => {
+                    *last = Some(Instant::now());
+                    true
+                }
+            }
+        };
+        if should_save {
+            Self::save_locked(&d, &self.path);
+        }
+    }
+
     /// 应用一批采样，返回汇总。落盘一次。
+    ///
+    /// 「我」的消耗来自 metering 真值；「他人」= 用量增长 - 我的 metering（负数归零）。
     pub fn apply_samples(&self, inputs: Vec<SampleInput>) -> SampleReport {
         let now = Utc::now().to_rfc3339();
         let mut report = SampleReport {
@@ -331,10 +437,18 @@ impl CreditLedger {
         let round_id = d.current_round.id;
 
         for input in inputs {
-            let existing = d.entries.get_mut(&input.fingerprint);
-            match existing {
+            // 取走这个凭据待入账的 metering 真值
+            let pending = d
+                .pending_metering
+                .remove(&input.cred_id.to_string())
+                .unwrap_or_default();
+            let metered = pending.credits;
+
+            match d.entries.get_mut(&input.fingerprint) {
                 None => {
-                    // 首次入账：当前用量作为基线，本次不计消耗
+                    // 首次入账：用量以当前值为基线（增量未知），但 metering 是真值照记
+                    let others = 0.0;
+                    report.my_delta += metered;
                     d.entries.insert(
                         input.fingerprint.clone(),
                         CreditEntry {
@@ -347,9 +461,10 @@ impl CreditLedger {
                             last_usage: input.current_usage,
                             usage_limit: input.usage_limit,
                             last_success_count: input.success_count,
-                            my_credits: 0.0,
-                            others_credits: 0.0,
+                            my_credits: metered,
+                            others_credits: others,
                             my_requests: 0,
+                            metered_requests: pending.requests,
                             resets: 0,
                             samples: 1,
                             first_seen: now.clone(),
@@ -363,6 +478,7 @@ impl CreditLedger {
                         cred_id: input.cred_id,
                         attribution: "new",
                         delta: 0.0,
+                        metered,
                     });
                 }
                 Some(e) => {
@@ -381,50 +497,47 @@ impl CreditLedger {
                     let delta = input.current_usage - prev_usage;
                     let success_delta = input.success_count.saturating_sub(e.last_success_count);
 
+                    // metering 是真值，任何分支都照记
+                    e.my_credits += metered;
+                    e.metered_requests = e.metered_requests.saturating_add(pending.requests);
+                    e.my_requests = e.my_requests.saturating_add(success_delta);
+                    report.my_delta += metered;
+
                     let attribution = if delta < -RESET_EPSILON {
                         // 用量回退：月度重置或号被换掉。重设基线，不倒扣已记账的消耗。
                         e.resets = e.resets.saturating_add(1);
                         e.baseline_usage = input.current_usage;
-                        e.last_usage = input.current_usage;
-                        e.last_success_count = input.success_count;
-                        e.my_requests = e.my_requests.saturating_add(success_delta);
                         tracing::info!(
                             "凭据 #{} 用量回退（{:.2} → {:.2}），判定重置，已重设基线",
                             input.cred_id,
                             prev_usage,
                             input.current_usage
                         );
-                        report.outcomes.push(SampleOutcome {
-                            fingerprint: input.fingerprint,
-                            cred_id: input.cred_id,
-                            attribution: "reset",
-                            delta,
-                        });
-                        continue;
-                    } else if delta <= 0.0 {
-                        // 无增长（含上游浮点抖动的微小回退）
-                        "idle"
-                    } else if success_delta > 0 {
-                        // 本区间我们自己有成功请求 → 记到「我」
-                        e.my_credits += delta;
-                        report.my_delta += delta;
-                        "mine"
+                        "reset"
                     } else {
-                        // 我们没打请求但用量涨了 → 拼车同池其他人消耗
-                        e.others_credits += delta;
-                        report.others_delta += delta;
-                        "others"
+                        // 他人消耗 = 用量增长扣掉我的真实消耗，负数归零
+                        let others = (delta - metered).max(0.0);
+                        if others > 0.0 {
+                            e.others_credits += others;
+                            report.others_delta += others;
+                        }
+                        match (metered > 0.0, others > 0.0) {
+                            (true, true) => "both",
+                            (true, false) => "mine",
+                            (false, true) => "others",
+                            (false, false) => "idle",
+                        }
                     };
 
                     e.last_usage = input.current_usage;
                     e.last_success_count = input.success_count;
-                    e.my_requests = e.my_requests.saturating_add(success_delta);
 
                     report.outcomes.push(SampleOutcome {
                         fingerprint: input.fingerprint,
                         cred_id: input.cred_id,
                         attribution,
-                        delta: delta.max(0.0),
+                        delta,
+                        metered,
                     });
                 }
             }
@@ -479,6 +592,7 @@ impl CreditLedger {
                 n.my_credits = 0.0;
                 n.others_credits = 0.0;
                 n.my_requests = 0;
+                n.metered_requests = 0;
                 n.resets = 0;
                 n.samples = 0;
                 n.first_seen = now.clone();
@@ -528,98 +642,161 @@ mod tests {
             fingerprint: fp.to_string(),
             cred_id: 1,
             label: "test".to_string(),
-            subscription_title: Some("KIRO PRO+".to_string()),
+            subscription_title: Some("KIRO POWER".to_string()),
             current_usage: usage,
-            usage_limit: 1000.0,
+            usage_limit: 10000.0,
             success_count: success,
         }
     }
 
     #[test]
-    fn first_sample_sets_baseline_without_charging() {
+    fn first_sample_sets_baseline_and_counts_metering() {
         let l = CreditLedger::load(None);
+        l.record_metering(1, 1.41);
         let r = l.apply_samples(vec![input("fp1", 120.0, 5)]);
-        assert_eq!(r.my_delta, 0.0);
+        // 首采用量增量未知，但 metering 是真值照记
+        assert_eq!(r.my_delta, 1.41);
         assert_eq!(r.others_delta, 0.0);
         let e = &l.snapshot().entries["fp1"];
         assert_eq!(e.baseline_usage, 120.0);
-        assert_eq!(e.total_credits(), 0.0);
+        assert_eq!(e.my_credits, 1.41);
+        assert_eq!(e.metered_requests, 1);
     }
 
     #[test]
-    fn delta_with_own_requests_counts_as_mine() {
+    fn my_credits_come_from_metering_not_usage_delta() {
         let l = CreditLedger::load(None);
         l.apply_samples(vec![input("fp1", 100.0, 0)]);
-        let r = l.apply_samples(vec![input("fp1", 130.0, 4)]);
-        assert_eq!(r.my_delta, 30.0);
-        assert_eq!(r.others_delta, 0.0);
+        // 上游总用量涨了 500（大部分是拼车同池其他人烧的），我们自己只花了 2.8
+        l.record_metering(1, 1.4);
+        l.record_metering(1, 1.4);
+        let r = l.apply_samples(vec![input("fp1", 600.0, 2)]);
+        assert!((r.my_delta - 2.8).abs() < 1e-9, "我的消耗取 metering 真值");
+        assert!(
+            (r.others_delta - 497.2).abs() < 1e-9,
+            "他人 = 500 - 2.8，不是把 500 全算我头上"
+        );
         let e = &l.snapshot().entries["fp1"];
-        assert_eq!(e.my_credits, 30.0);
-        assert_eq!(e.my_requests, 4);
+        assert!((e.my_credits - 2.8).abs() < 1e-9);
+        assert_eq!(e.metered_requests, 2);
+        assert!((e.my_avg_cost().unwrap() - 1.4).abs() < 1e-9);
     }
 
     #[test]
-    fn delta_without_own_requests_counts_as_others() {
+    fn zero_own_requests_means_all_growth_is_others() {
         let l = CreditLedger::load(None);
         l.apply_samples(vec![input("fp1", 100.0, 7)]);
         let r = l.apply_samples(vec![input("fp1", 155.0, 7)]);
-        assert_eq!(r.others_delta, 55.0);
         assert_eq!(r.my_delta, 0.0);
+        assert_eq!(r.others_delta, 55.0);
         let e = &l.snapshot().entries["fp1"];
+        assert_eq!(e.my_credits, 0.0);
         assert_eq!(e.others_credits, 55.0);
     }
 
     #[test]
-    fn usage_rollback_resets_baseline_without_deducting() {
+    fn metering_larger_than_usage_delta_clamps_others_to_zero() {
         let l = CreditLedger::load(None);
         l.apply_samples(vec![input("fp1", 100.0, 0)]);
+        // 额度接口有缓存/延迟，可能出现 metering > 观测增长；他人不能变负数
+        l.record_metering(1, 5.0);
+        let r = l.apply_samples(vec![input("fp1", 102.0, 1)]);
+        assert_eq!(r.my_delta, 5.0);
+        assert_eq!(r.others_delta, 0.0);
+        assert_eq!(l.snapshot().entries["fp1"].others_credits, 0.0);
+    }
+
+    #[test]
+    fn usage_rollback_resets_baseline_and_still_counts_metering() {
+        let l = CreditLedger::load(None);
+        l.apply_samples(vec![input("fp1", 100.0, 0)]);
+        l.record_metering(1, 3.0);
         l.apply_samples(vec![input("fp1", 180.0, 3)]);
+        l.record_metering(1, 1.5);
         let r = l.apply_samples(vec![input("fp1", 10.0, 3)]);
-        assert_eq!(r.my_delta, 0.0);
+        assert_eq!(r.my_delta, 1.5, "重置区间的 metering 仍是真值");
         let e = &l.snapshot().entries["fp1"];
-        assert_eq!(e.my_credits, 80.0, "已记账消耗不倒扣");
+        assert_eq!(e.my_credits, 4.5, "已记账消耗不倒扣");
         assert_eq!(e.baseline_usage, 10.0);
         assert_eq!(e.resets, 1);
+    }
+
+    #[test]
+    fn pending_metering_is_per_credential() {
+        let l = CreditLedger::load(None);
+        let mut a = input("fpA", 100.0, 0);
+        a.cred_id = 1;
+        let mut b = input("fpB", 200.0, 0);
+        b.cred_id = 2;
+        l.apply_samples(vec![a.clone(), b.clone()]);
+
+        l.record_metering(1, 2.0);
+        l.record_metering(2, 7.0);
+        let mut a2 = a.clone();
+        a2.current_usage = 150.0;
+        let mut b2 = b.clone();
+        b2.current_usage = 250.0;
+        l.apply_samples(vec![a2, b2]);
+
+        let s = l.snapshot();
+        assert_eq!(s.entries["fpA"].my_credits, 2.0);
+        assert_eq!(s.entries["fpB"].my_credits, 7.0);
+        assert!(s.pending_metering.is_empty(), "采样后待入账应清空");
     }
 
     #[test]
     fn dead_credential_stays_on_current_round() {
         let l = CreditLedger::load(None);
         l.apply_samples(vec![input("fp1", 100.0, 0)]);
+        l.record_metering(1, 2.5);
         l.apply_samples(vec![input("fp1", 150.0, 2)]);
         l.mark_dead("fp1", "deleted");
         let e = &l.snapshot().entries["fp1"];
         assert!(!e.alive);
-        assert_eq!(e.my_credits, 50.0);
+        assert_eq!(e.my_credits, 2.5);
     }
 
     #[test]
     fn new_round_archives_and_carries_alive_entries() {
         let l = CreditLedger::load(None);
-        l.apply_samples(vec![input("alive", 100.0, 0), input("dead", 200.0, 0)]);
-        l.apply_samples(vec![input("alive", 140.0, 3), input("dead", 260.0, 5)]);
+        let mut alive = input("alive", 100.0, 0);
+        alive.cred_id = 1;
+        let mut dead = input("dead", 200.0, 0);
+        dead.cred_id = 2;
+        l.apply_samples(vec![alive.clone(), dead.clone()]);
+
+        l.record_metering(1, 4.0);
+        l.record_metering(2, 6.0);
+        let mut alive2 = alive.clone();
+        alive2.current_usage = 140.0;
+        let mut dead2 = dead.clone();
+        dead2.current_usage = 260.0;
+        l.apply_samples(vec![alive2, dead2]);
         l.mark_dead("dead", "deleted");
 
         l.start_new_round(Some("round2".into()), None).unwrap();
         let s = l.snapshot();
         assert_eq!(s.current_round.id, 2);
         assert_eq!(s.archived.len(), 1);
-        assert_eq!(s.archived[0].total_my(), 100.0, "旧轮汇总 40 + 60");
+        assert_eq!(s.archived[0].total_my(), 10.0, "旧轮我的消耗 4 + 6");
         assert!(s.entries.contains_key("alive"));
         assert!(!s.entries.contains_key("dead"), "死号不带进新轮");
         let carried = &s.entries["alive"];
         assert_eq!(carried.baseline_usage, 140.0);
         assert_eq!(carried.my_credits, 0.0);
+        assert_eq!(carried.metered_requests, 0);
     }
 
     #[test]
-    fn new_round_then_sampling_charges_from_new_baseline() {
+    fn new_round_then_metering_charges_into_new_round() {
         let l = CreditLedger::load(None);
         l.apply_samples(vec![input("fp1", 100.0, 0)]);
+        l.record_metering(1, 5.0);
         l.apply_samples(vec![input("fp1", 150.0, 2)]);
         l.start_new_round(None, None).unwrap();
+        l.record_metering(1, 1.25);
         let r = l.apply_samples(vec![input("fp1", 175.0, 5)]);
-        assert_eq!(r.my_delta, 25.0);
-        assert_eq!(l.snapshot().entries["fp1"].my_credits, 25.0);
+        assert_eq!(r.my_delta, 1.25);
+        assert_eq!(l.snapshot().entries["fp1"].my_credits, 1.25);
     }
 }

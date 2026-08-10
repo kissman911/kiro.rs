@@ -123,8 +123,11 @@ impl Event {
                 Ok(Self::ToolUse(payload))
             }
             EventType::Metering => {
-                // 诊断期：先打原始 payload，确认 unit 口径与额度接口是否一致
-                tracing::info!("meteringEvent 原始 payload: {}", frame.payload_as_str());
+                // 口径已核实（2026-08-10）：payload 形如
+                // {"unit":"credit","unitPlural":"credits","usage":1.410004332437811}
+                // unit 就是面板上的「积分」，实测单价约 1.4 积分/次。
+                // 真实消耗由 handlers 侧按凭据记进 credit_ledger，这里只保留 debug 级日志。
+                tracing::debug!("meteringEvent 原始 payload: {}", frame.payload_as_str());
                 let payload = super::MeteringEvent::from_frame(&frame)?;
                 Ok(Self::Metering(payload))
             }

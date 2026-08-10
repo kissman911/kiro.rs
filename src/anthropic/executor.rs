@@ -53,8 +53,12 @@ impl SinglePhaseExecutor {
         // 走带多凭据故障转移的 call_api_stream：遇 401/403/402/429/5xx 自动切号重试，
         // 所有凭据都失败才把错误抛给终端（对用户尽量无感）。profileArn 由 endpoint 的
         // transform_api_body 按选中凭据注入，无需在此手动 attach。
-        let response = match self.provider.call_api_stream(input.request_body).await {
-            Ok(resp) => resp,
+        let (response, cred_id) = match self
+            .provider
+            .call_api_stream_tracked(input.request_body)
+            .await
+        {
+            Ok(v) => v,
             Err(e) => return map_provider_error(e),
         };
 
@@ -67,7 +71,7 @@ impl SinglePhaseExecutor {
                     input.tool_name_map,
                 );
                 let initial_events = ctx.generate_initial_events();
-                Body::from_stream(create_sse_stream(response, ctx, initial_events))
+                Body::from_stream(create_sse_stream(response, ctx, initial_events, cred_id))
             }
             StreamMode::Buffered => {
                 let ctx = BufferedStreamContext::new(
@@ -76,7 +80,7 @@ impl SinglePhaseExecutor {
                     input.thinking_enabled,
                     input.tool_name_map,
                 );
-                Body::from_stream(create_buffered_sse_stream(response, ctx))
+                Body::from_stream(create_buffered_sse_stream(response, ctx, cred_id))
             }
         };
 
@@ -100,8 +104,8 @@ impl SinglePhaseExecutor {
     ) -> Response {
         debug_assert!(matches!(plan.mode, ExecutionMode::SinglePhase));
         // 带故障转移的非流式调用：切号重试直到成功或所有凭据用尽。
-        let response = match self.provider.call_api(request_body).await {
-            Ok(resp) => resp,
+        let (response, cred_id) = match self.provider.call_api_tracked(request_body).await {
+            Ok(v) => v,
             Err(e) => return map_provider_error(e),
         };
         build_non_stream_response_from_upstream(
@@ -110,6 +114,7 @@ impl SinglePhaseExecutor {
             input_tokens,
             thinking_enabled,
             tool_name_map,
+            cred_id,
         )
         .await
     }
@@ -217,6 +222,9 @@ impl TwoPhaseExecutor {
                 }
             };
 
+            // 多阶段路径凭据是显式绑定的，直接用 call_ctx.id 记 metering
+            let cred_id = call_ctx.id;
+
             let body = match input.stream_mode {
                 StreamMode::Direct => {
                     let mut ctx = StreamContext::new_with_thinking(
@@ -226,7 +234,7 @@ impl TwoPhaseExecutor {
                         input.tool_name_map,
                     );
                     let initial_events = ctx.generate_initial_events();
-                    Body::from_stream(create_sse_stream(response, ctx, initial_events))
+                    Body::from_stream(create_sse_stream(response, ctx, initial_events, cred_id))
                 }
                 StreamMode::Buffered => {
                     let ctx = BufferedStreamContext::new(
@@ -235,7 +243,7 @@ impl TwoPhaseExecutor {
                         input.thinking_enabled,
                         input.tool_name_map,
                     );
-                    Body::from_stream(create_buffered_sse_stream(response, ctx))
+                    Body::from_stream(create_buffered_sse_stream(response, ctx, cred_id))
                 }
             };
 
@@ -354,6 +362,7 @@ impl TwoPhaseExecutor {
                 input_tokens,
                 thinking_enabled,
                 tool_name_map,
+                call_ctx.id,
             )
             .await;
         }

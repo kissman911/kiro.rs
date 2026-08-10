@@ -301,11 +301,13 @@ export interface CreditEntry {
   lastUsage: number
   usageLimit: number
   lastSuccessCount: number
-  /** 本轮「我」消耗的积分 */
+  /** 本轮「我」消耗的积分（上游 meteringEvent 真值累加，非估算） */
   myCredits: number
-  /** 本轮「他人」消耗的积分（拼车同池） */
+  /** 本轮「他人」消耗的积分（上游用量增长扣除我的 metering 后的余量） */
   othersCredits: number
   myRequests: number
+  /** 本轮收到 metering 事件的次数（计价样本数） */
+  meteredRequests: number
   resets: number
   samples: number
   firstSeen: string
@@ -341,6 +343,10 @@ export interface CreditLedgerResponse {
   othersTotal: number
   total: number
   myRequests: number
+  /** 本轮收到 metering 事件的总次数 */
+  meteredRequests: number
+  /** 我的平均单价（积分/请求），无样本时缺省 */
+  myAvgCost?: number
   aliveCount: number
   deadCount: number
   lastSampleAt?: string

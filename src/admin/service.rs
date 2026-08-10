@@ -147,6 +147,12 @@ impl AdminService {
         let my_total: f64 = entries.iter().map(|e| e.my_credits).sum();
         let others_total: f64 = entries.iter().map(|e| e.others_credits).sum();
         let my_requests: u64 = entries.iter().map(|e| e.my_requests).sum();
+        let metered_requests: u64 = entries.iter().map(|e| e.metered_requests).sum();
+        let my_avg_cost = if metered_requests == 0 {
+            None
+        } else {
+            Some(my_total / metered_requests as f64)
+        };
         let alive_count = entries.iter().filter(|e| e.alive).count();
         let dead_count = entries.len() - alive_count;
 
@@ -174,6 +180,8 @@ impl AdminService {
             others_total,
             total: my_total + others_total,
             my_requests,
+            metered_requests,
+            my_avg_cost,
             alive_count,
             dead_count,
             last_sample_at: data.last_sample_at,
