@@ -30,6 +30,14 @@ impl AdminState {
             service: Arc::new(service),
         }
     }
+
+    /// 复用已共享的服务实例（后台采样任务需要与 HTTP 层共用同一个 service）
+    pub fn from_shared(admin_api_key: impl Into<String>, service: Arc<AdminService>) -> Self {
+        Self {
+            admin_api_key: admin_api_key.into(),
+            service,
+        }
+    }
 }
 
 /// Admin API 认证中间件

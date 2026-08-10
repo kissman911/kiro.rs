@@ -3,6 +3,7 @@ mod admin_ui;
 mod anthropic;
 mod carpool;
 mod common;
+mod credit_ledger;
 mod http_client;
 mod image_resize;
 mod kiro;
@@ -195,13 +196,44 @@ async fn main() {
             let carpool = std::sync::Arc::new(carpool::Carpool::load(
                 token_manager.cache_dir().map(|d| d.join("carpool.json")),
             ));
-            let admin_service = admin::AdminService::new(
+            let credit_ledger = std::sync::Arc::new(credit_ledger::CreditLedger::load(
+                token_manager
+                    .cache_dir()
+                    .map(|d| d.join("credit_ledger.json")),
+            ));
+            let admin_service = std::sync::Arc::new(admin::AdminService::new(
                 token_manager.clone(),
                 endpoint_names.clone(),
                 proxy_pool,
                 carpool,
-            );
-            let admin_state = admin::AdminState::new(admin_key, admin_service);
+                credit_ledger,
+            ));
+
+            // 后台积分采样：每 5 分钟差分一次上游用量，写入账本。
+            // 与余额缓存 TTL 对齐，不给上游额外压力；单凭据失败不影响其他凭据。
+            {
+                let svc = admin_service.clone();
+                tokio::spawn(async move {
+                    let interval = std::time::Duration::from_secs(
+                        admin::CREDIT_SAMPLE_INTERVAL_SECS,
+                    );
+                    // 启动后先等一轮，避免和启动期的凭据初始化/刷新抢上游
+                    tokio::time::sleep(interval).await;
+                    loop {
+                        let report = svc.sample_credits().await;
+                        tracing::info!(
+                            "积分采样完成: 凭据 {} 个（失败 {}），本轮增量 我 {:.2} / 他人 {:.2}",
+                            report.sampled,
+                            report.failed,
+                            report.my_delta,
+                            report.others_delta
+                        );
+                        tokio::time::sleep(interval).await;
+                    }
+                });
+            }
+
+            let admin_state = admin::AdminState::from_shared(admin_key, admin_service);
             let admin_app = admin::create_admin_router(admin_state);
 
             // 创建 Admin UI 路由

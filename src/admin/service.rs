@@ -8,18 +8,26 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::credit_ledger::{CreditEntry, CreditLedger, SampleInput, SampleReport};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::MultiTokenManager;
 
 use super::error::AdminServiceError;
 use super::types::{
-    AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
-    CredentialsStatusResponse, LoadBalancingModeResponse, RuntimeSettingsResponse,
-    SetLoadBalancingModeRequest, UpdateRuntimeSettingsRequest,
+    AddCredentialRequest, AddCredentialResponse, ArchivedRoundSummary, BalanceResponse,
+    CreditLedgerResponse, CredentialStatusItem, CredentialsStatusResponse,
+    LoadBalancingModeResponse, RuntimeSettingsResponse, SetLoadBalancingModeRequest,
+    UpdateRuntimeSettingsRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
 const BALANCE_CACHE_TTL_SECS: i64 = 300;
+
+/// 积分采样默认间隔（秒），与余额缓存 TTL 对齐，避免额外压上游
+pub const CREDIT_SAMPLE_INTERVAL_SECS: u64 = 300;
+
+/// 批量采样时每个凭据之间的间隔（毫秒），避免瞬间打满上游
+const CREDIT_SAMPLE_STAGGER_MS: u64 = 400;
 
 /// 缓存的余额条目（含时间戳）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +51,8 @@ pub struct AdminService {
     proxy_pool: Arc<crate::proxy_pool::ProxyPool>,
     /// 拼车补号配置（面板可配，daemon 消费）
     carpool: Arc<crate::carpool::Carpool>,
+    /// 积分消耗账本（kirors-b 专属）
+    credit_ledger: Arc<CreditLedger>,
 }
 
 impl AdminService {
@@ -51,6 +61,7 @@ impl AdminService {
         known_endpoints: impl IntoIterator<Item = String>,
         proxy_pool: Arc<crate::proxy_pool::ProxyPool>,
         carpool: Arc<crate::carpool::Carpool>,
+        credit_ledger: Arc<CreditLedger>,
     ) -> Self {
         let cache_path = token_manager
             .cache_dir()
@@ -65,7 +76,212 @@ impl AdminService {
             known_endpoints: known_endpoints.into_iter().collect(),
             proxy_pool,
             carpool,
+            credit_ledger,
         }
+    }
+
+    // ============ 积分账本（kirors-b 专属） ============
+
+    /// 凭据指纹：优先 API Key 哈希 → refreshToken 哈希 → 兜底 ID
+    ///
+    /// 用指纹而不是自增 ID 建账，凭据被删后重新导入同一个号也能续上账。
+    fn fingerprint_of(entry: &crate::kiro::token_manager::CredentialEntrySnapshot) -> String {
+        entry
+            .api_key_hash
+            .clone()
+            .or_else(|| entry.refresh_token_hash.clone())
+            .unwrap_or_else(|| format!("id:{}", entry.id))
+    }
+
+    /// 凭据展示标签：显示名 → 邮箱 → 脱敏 Key → #ID
+    fn label_of(entry: &crate::kiro::token_manager::CredentialEntrySnapshot) -> String {
+        entry
+            .display_name
+            .clone()
+            .or_else(|| entry.email.clone())
+            .or_else(|| entry.masked_api_key.clone())
+            .unwrap_or_else(|| format!("#{}", entry.id))
+    }
+
+    /// 当前轮次来源标记：提号接口 host + token 尾 8 位（不落完整 token）
+    fn carpool_source_tag(&self) -> Option<String> {
+        let url = self.carpool.settings().get_url;
+        let url = url.trim();
+        if url.is_empty() {
+            return None;
+        }
+        let host = url
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("unknown");
+        let tail = url
+            .split("token=")
+            .nth(1)
+            .map(|t| t.split('&').next().unwrap_or(t))
+            .map(|t| {
+                if t.len() > 8 {
+                    format!("…{}", &t[t.len() - 8..])
+                } else {
+                    t.to_string()
+                }
+            });
+        Some(match tail {
+            Some(t) => format!("{} (token {})", host, t),
+            None => host.to_string(),
+        })
+    }
+
+    /// 读取积分账本（当前轮明细 + 汇总 + 历史轮摘要）
+    pub fn get_credit_ledger(&self) -> CreditLedgerResponse {
+        let data = self.credit_ledger.snapshot();
+
+        let mut entries: Vec<CreditEntry> = data.entries.into_values().collect();
+        // 存活优先，其次按本轮总消耗降序
+        entries.sort_by(|a, b| {
+            b.alive
+                .cmp(&a.alive)
+                .then(b.total_credits().total_cmp(&a.total_credits()))
+        });
+
+        let my_total: f64 = entries.iter().map(|e| e.my_credits).sum();
+        let others_total: f64 = entries.iter().map(|e| e.others_credits).sum();
+        let my_requests: u64 = entries.iter().map(|e| e.my_requests).sum();
+        let alive_count = entries.iter().filter(|e| e.alive).count();
+        let dead_count = entries.len() - alive_count;
+
+        let archived = data
+            .archived
+            .iter()
+            .rev()
+            .map(|r| ArchivedRoundSummary {
+                id: r.meta.id,
+                started_at: r.meta.started_at.clone(),
+                ended_at: r.meta.ended_at.clone(),
+                note: r.meta.note.clone(),
+                source: r.meta.source.clone(),
+                my_total: r.total_my(),
+                others_total: r.total_others(),
+                total: r.total_my() + r.total_others(),
+                credential_count: r.entries.len(),
+            })
+            .collect();
+
+        CreditLedgerResponse {
+            current_round: data.current_round,
+            entries,
+            my_total,
+            others_total,
+            total: my_total + others_total,
+            my_requests,
+            alive_count,
+            dead_count,
+            last_sample_at: data.last_sample_at,
+            sample_interval_seconds: CREDIT_SAMPLE_INTERVAL_SECS,
+            archived,
+        }
+    }
+
+    /// 组装单个凭据的采样输入（查上游额度）
+    async fn build_sample_input(
+        &self,
+        entry: &crate::kiro::token_manager::CredentialEntrySnapshot,
+    ) -> Result<SampleInput, String> {
+        let usage = self
+            .token_manager
+            .get_usage_limits_for(entry.id)
+            .await
+            .map_err(|e| format!("凭据 #{} 额度查询失败: {}", entry.id, e))?;
+
+        Ok(SampleInput {
+            fingerprint: Self::fingerprint_of(entry),
+            cred_id: entry.id,
+            label: Self::label_of(entry),
+            subscription_title: usage.subscription_title().map(|s| s.to_string()),
+            current_usage: usage.current_usage(),
+            usage_limit: usage.usage_limit(),
+            success_count: entry.success_count,
+        })
+    }
+
+    /// 采样全部凭据用量并写账本
+    ///
+    /// 单个凭据查询失败不影响其他凭据；失败原因回报给调用方。
+    /// 同时把管理器里已禁用的凭据在账本上标记为死号（保留消耗记录）。
+    pub async fn sample_credits(&self) -> SampleReport {
+        let snapshot = self.token_manager.snapshot();
+        let mut inputs = Vec::with_capacity(snapshot.entries.len());
+        let mut errors = Vec::new();
+
+        let total = snapshot.entries.len();
+        for (idx, entry) in snapshot.entries.iter().enumerate() {
+            match self.build_sample_input(entry).await {
+                Ok(input) => inputs.push(input),
+                Err(msg) => {
+                    tracing::debug!("积分采样跳过: {}", msg);
+                    errors.push(msg);
+                }
+            }
+            if idx + 1 < total {
+                tokio::time::sleep(std::time::Duration::from_millis(CREDIT_SAMPLE_STAGGER_MS))
+                    .await;
+            }
+        }
+
+        let mut report = self.credit_ledger.apply_samples(inputs);
+        report.failed = errors.len();
+        report.errors = errors;
+
+        // 已禁用凭据标死号：账留在本轮，换号后仍能看到它烧了多少
+        for entry in &snapshot.entries {
+            if entry.disabled {
+                let reason = entry
+                    .disabled_reason
+                    .clone()
+                    .unwrap_or_else(|| "disabled".to_string());
+                self.credit_ledger
+                    .mark_dead(&Self::fingerprint_of(entry), reason);
+            }
+        }
+
+        // 轮次来源跟随当前拼车接口
+        self.credit_ledger.set_current_source(self.carpool_source_tag());
+
+        report
+    }
+
+    /// 删除/禁用前补一次终值采样，避免换号时最后一段消耗丢账
+    async fn final_sample_for(&self, id: u64) {
+        let snapshot = self.token_manager.snapshot();
+        let entry = match snapshot.entries.iter().find(|e| e.id == id) {
+            Some(e) => e,
+            None => return,
+        };
+        match self.build_sample_input(entry).await {
+            Ok(input) => {
+                self.credit_ledger.apply_samples(vec![input]);
+            }
+            Err(msg) => tracing::warn!("终值采样失败（消耗记录停留在上次采样值）: {}", msg),
+        }
+    }
+
+    /// 开启新一轮车队统计（旧轮归档，存活凭据以当前用量为新基线）
+    pub async fn start_credit_round(
+        &self,
+        note: Option<String>,
+    ) -> Result<crate::credit_ledger::RoundMeta, AdminServiceError> {
+        // 先把旧轮的账记全，再切轮，否则最后一段消耗会落到新轮
+        self.sample_credits().await;
+        self.credit_ledger
+            .start_new_round(note, self.carpool_source_tag())
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))
+    }
+
+    /// 清空积分账本（含历史轮次）
+    pub fn reset_credit_ledger(&self) -> Result<(), AdminServiceError> {
+        self.credit_ledger
+            .reset_all()
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
     /// 获取拼车补号配置
@@ -528,10 +744,24 @@ impl AdminService {
     }
 
     /// 删除凭据
-    pub fn delete_credential(&self, id: u64) -> Result<(), AdminServiceError> {
+    pub async fn delete_credential(&self, id: u64) -> Result<(), AdminServiceError> {
+        // 删号前补一次终值采样 + 标死号，保住本轮已产生的消耗记录
+        let fingerprint = self
+            .token_manager
+            .snapshot()
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(Self::fingerprint_of);
+        self.final_sample_for(id).await;
+
         self.token_manager
             .delete_credential(id)
             .map_err(|e| self.classify_delete_error(e, id))?;
+
+        if let Some(fp) = fingerprint {
+            self.credit_ledger.mark_dead(&fp, "deleted");
+        }
 
         // 清理已删除凭据的余额缓存
         {
@@ -920,7 +1150,8 @@ mod tests {
         let tm = Arc::new(MultiTokenManager::new(config, vec![], None, None, false).expect("tm"));
         let pool = Arc::new(ProxyPool::load(None, TlsBackend::Rustls));
         let carpool = Arc::new(crate::carpool::Carpool::load(None));
-        AdminService::new(tm, Vec::<String>::new(), pool, carpool)
+        let ledger = Arc::new(crate::credit_ledger::CreditLedger::load(None));
+        AdminService::new(tm, Vec::<String>::new(), pool, carpool, ledger)
     }
 
     #[test]

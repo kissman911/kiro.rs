@@ -320,6 +320,66 @@ pub struct BalanceResponse {
     pub next_reset_at: Option<f64>,
 }
 
+// ============ 积分账本（kirors-b 专属） ============
+
+use crate::credit_ledger::{CreditEntry, RoundMeta};
+
+/// 积分账本响应（当前轮明细 + 汇总 + 历史轮摘要）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditLedgerResponse {
+    /// 当前轮次元信息
+    pub current_round: RoundMeta,
+    /// 当前轮各凭据明细（存活优先，按消耗降序）
+    pub entries: Vec<CreditEntry>,
+    /// 本轮「我」消耗总积分
+    pub my_total: f64,
+    /// 本轮「他人」消耗总积分（拼车同池其他人）
+    pub others_total: f64,
+    /// 本轮合计
+    pub total: f64,
+    /// 本轮我们自己的成功请求数
+    pub my_requests: u64,
+    /// 存活凭据数
+    pub alive_count: usize,
+    /// 死号数（已禁用/已删除但账仍在本轮）
+    pub dead_count: usize,
+    /// 最后一次采样时间（RFC3339）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sample_at: Option<String>,
+    /// 后台采样间隔（秒，供前端提示）
+    pub sample_interval_seconds: u64,
+    /// 历史轮摘要（新 → 旧）
+    pub archived: Vec<ArchivedRoundSummary>,
+}
+
+/// 历史轮汇总摘要
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedRoundSummary {
+    pub id: u64,
+    pub started_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub my_total: f64,
+    pub others_total: f64,
+    pub total: f64,
+    pub credential_count: usize,
+}
+
+/// 开启新一轮请求
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartCreditRoundRequest {
+    /// 备注（可选，如车队来源说明）
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 // ============ 负载均衡配置 ============
 
 /// 负载均衡模式响应

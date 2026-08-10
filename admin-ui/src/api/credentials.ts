@@ -24,6 +24,9 @@ import type {
   UpdateProxyPoolSettingsRequest,
   CarpoolSettings,
   UpdateCarpoolSettingsRequest,
+  CreditLedgerResponse,
+  CreditSampleReport,
+  RoundMeta,
   ProxyTestResponse,
   BatchAddProxyResponse,
 } from '@/types/api'
@@ -292,5 +295,31 @@ export async function updateCarpoolSettings(
   req: UpdateCarpoolSettingsRequest
 ): Promise<CarpoolSettings> {
   const { data } = await api.put<CarpoolSettings>('/carpool/settings', req)
+  return data
+}
+
+// ============ 积分账本（kirors-b 专属） ============
+
+// 读取积分账本（本轮明细 + 汇总 + 历史轮）
+export async function getCreditLedger(): Promise<CreditLedgerResponse> {
+  const { data } = await api.get<CreditLedgerResponse>('/credits')
+  return data
+}
+
+// 立即采样一次用量
+export async function sampleCredits(): Promise<CreditSampleReport> {
+  const { data } = await api.post<CreditSampleReport>('/credits/sample')
+  return data
+}
+
+// 开启新一轮车队统计
+export async function startCreditRound(note?: string): Promise<RoundMeta> {
+  const { data } = await api.post<RoundMeta>('/credits/rounds', { note })
+  return data
+}
+
+// 清空积分账本
+export async function resetCreditLedger(): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>('/credits/reset')
   return data
 }

@@ -288,6 +288,82 @@ export interface UpdateCarpoolSettingsRequest {
   healthyErrRatio?: number
 }
 
+// ============ 积分账本（kirors-b 专属） ============
+
+// 单个凭据在本轮的积分账
+export interface CreditEntry {
+  fingerprint: string
+  roundId: number
+  credId: number
+  label: string
+  subscriptionTitle?: string
+  baselineUsage: number
+  lastUsage: number
+  usageLimit: number
+  lastSuccessCount: number
+  /** 本轮「我」消耗的积分 */
+  myCredits: number
+  /** 本轮「他人」消耗的积分（拼车同池） */
+  othersCredits: number
+  myRequests: number
+  resets: number
+  samples: number
+  firstSeen: string
+  lastSeen: string
+  alive: boolean
+  deadReason?: string
+}
+
+export interface RoundMeta {
+  id: number
+  startedAt: string
+  endedAt?: string
+  note?: string
+  source?: string
+}
+
+export interface ArchivedRoundSummary {
+  id: number
+  startedAt: string
+  endedAt?: string
+  note?: string
+  source?: string
+  myTotal: number
+  othersTotal: number
+  total: number
+  credentialCount: number
+}
+
+export interface CreditLedgerResponse {
+  currentRound: RoundMeta
+  entries: CreditEntry[]
+  myTotal: number
+  othersTotal: number
+  total: number
+  myRequests: number
+  aliveCount: number
+  deadCount: number
+  lastSampleAt?: string
+  sampleIntervalSeconds: number
+  archived: ArchivedRoundSummary[]
+}
+
+export interface CreditSampleOutcome {
+  fingerprint: string
+  credId: number
+  attribution: 'new' | 'mine' | 'others' | 'reset' | 'idle'
+  delta: number
+}
+
+export interface CreditSampleReport {
+  sampled: number
+  failed: number
+  myDelta: number
+  othersDelta: number
+  outcomes: CreditSampleOutcome[]
+  errors?: string[]
+}
+
 export interface ProxyTestResponse {
   success: boolean
   message: string

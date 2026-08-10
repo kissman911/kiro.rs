@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { CredentialStatusItem, BalanceResponse, RateLimitRule, RequestEventItem, RequestEventKind } from '@/types/api'
+import type { CredentialStatusItem, BalanceResponse, CreditEntry, RateLimitRule, RequestEventItem, RequestEventKind } from '@/types/api'
 import { KIRO_ENDPOINTS, KIRO_ENDPOINT_META } from '@/types/api'
 import {
   useSetDisabled,
@@ -39,6 +39,8 @@ interface CredentialCardProps {
   onToggleSelect: () => void
   balance: BalanceResponse | null
   loadingBalance: boolean
+  /** 本轮积分账（kirors-b 专属，未采样时为 null） */
+  credit?: CreditEntry | null
 }
 
 function formatRateLimits(rules?: RateLimitRule[]): string {
@@ -126,6 +128,7 @@ export function CredentialCard({
   onToggleSelect,
   balance,
   loadingBalance,
+  credit,
 }: CredentialCardProps) {
   const [editingPriority, setEditingPriority] = useState(false)
   const [priorityValue, setPriorityValue] = useState(String(credential.priority))
@@ -635,6 +638,27 @@ export function CredentialCard({
                   </div>
                 </div>
               )}
+            </div>
+            <div className="col-span-2 space-y-1.5">
+              <div className="flex flex-wrap items-baseline gap-x-1">
+                <span className="text-muted-foreground">本轮积分：</span>
+                {credit ? (
+                  <span className="font-medium ml-1">
+                    <span className="text-emerald-600 dark:text-emerald-400">
+                      我 {credit.myCredits.toFixed(2)}
+                    </span>
+                    <span className="text-muted-foreground mx-1">/</span>
+                    <span className="text-amber-600 dark:text-amber-400">
+                      他人 {credit.othersCredits.toFixed(2)}
+                    </span>
+                    <span className="text-xs text-muted-foreground ml-1">
+                      （合计 {(credit.myCredits + credit.othersCredits).toFixed(2)}，我的请求 {credit.myRequests} 次）
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-sm text-muted-foreground ml-1">待采样</span>
+                )}
+              </div>
             </div>
             <div className="col-span-2 flex items-center gap-2">
               <span className="text-muted-foreground">超额模式：</span>

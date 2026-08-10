@@ -11,11 +11,48 @@ use super::{
     types::{
         AddCredentialRequest, AddProxyRequest, BatchAddProxyRequest, SetAllowOverageRequest,
         SetDisabledRequest, SetDisplayNameRequest, SetEndpointRequest, SetLoadBalancingModeRequest,
-        SetPriorityRequest, SetProxyDisabledRequest, SetRateLimitsRequest, SuccessResponse,
-        UpdateProxyPoolSettingsRequest, UpdateProxyRequest, UpdateRuntimeSettingsRequest,
-        VersionInfoResponse,
+        SetPriorityRequest, SetProxyDisabledRequest, SetRateLimitsRequest, StartCreditRoundRequest,
+        SuccessResponse, UpdateProxyPoolSettingsRequest, UpdateProxyRequest,
+        UpdateRuntimeSettingsRequest, VersionInfoResponse,
     },
 };
+
+/// GET /api/admin/credits
+/// 积分消耗账本（本轮明细 + 汇总 + 历史轮）
+pub async fn get_credit_ledger(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_credit_ledger())
+}
+
+/// POST /api/admin/credits/sample
+/// 立即采样一次用量（面板手动刷新）
+pub async fn sample_credits(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.sample_credits().await)
+}
+
+/// POST /api/admin/credits/rounds
+/// 开启新一轮车队统计
+pub async fn start_credit_round(
+    State(state): State<AdminState>,
+    body: Option<Json<StartCreditRoundRequest>>,
+) -> impl IntoResponse {
+    let note = body.and_then(|Json(b)| b.note).and_then(|n| {
+        let n = n.trim().to_string();
+        if n.is_empty() { None } else { Some(n) }
+    });
+    match state.service.start_credit_round(note).await {
+        Ok(meta) => Json(meta).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credits/reset
+/// 清空积分账本（含历史轮次）
+pub async fn reset_credit_ledger(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.reset_credit_ledger() {
+        Ok(_) => Json(SuccessResponse::new("积分账本已清空")).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
 
 /// GET /api/admin/carpool/settings
 pub async fn get_carpool_settings(State(state): State<AdminState>) -> impl IntoResponse {
@@ -226,7 +263,7 @@ pub async fn delete_credential(
     State(state): State<AdminState>,
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
-    match state.service.delete_credential(id) {
+    match state.service.delete_credential(id).await {
         Ok(_) => Json(SuccessResponse::new(format!("凭据 #{} 已删除", id))).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }

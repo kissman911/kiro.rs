@@ -9,6 +9,7 @@ use super::{
     handlers::{
         add_credential, add_proxy, batch_add_proxy, clear_credential_cooldown, delete_credential,
         delete_proxy, force_refresh_token, get_all_credentials, get_carpool_settings,
+        get_credit_ledger, reset_credit_ledger, sample_credits, start_credit_round,
         get_credential_balance, get_load_balancing_mode, get_proxy_pool, get_proxy_pool_settings,
         get_runtime_settings, get_version_info, reset_all_success_count, reset_failure_count,
         reset_success_count, set_credential_allow_overage, set_credential_disabled,
@@ -99,6 +100,11 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/carpool/settings",
             get(get_carpool_settings).put(update_carpool_settings),
         )
+        // 积分消耗账本（kirors-b 专属）
+        .route("/credits", get(get_credit_ledger))
+        .route("/credits/sample", post(sample_credits))
+        .route("/credits/rounds", post(start_credit_round))
+        .route("/credits/reset", post(reset_credit_ledger))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth_middleware,

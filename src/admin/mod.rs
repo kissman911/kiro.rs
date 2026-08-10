@@ -25,4 +25,4 @@ pub mod types;
 
 pub use middleware::AdminState;
 pub use router::create_admin_router;
-pub use service::AdminService;
+pub use service::{AdminService, CREDIT_SAMPLE_INTERVAL_SECS};

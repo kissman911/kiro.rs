@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Trash2, RotateCcw, CheckCircle2, GitBranch, Settings2, Network, Car } from 'lucide-react'
+import { RefreshCw, LogOut, Moon, Sun, Server, Plus, Upload, FileUp, Trash2, RotateCcw, CheckCircle2, GitBranch, Settings2, Network, Car, Coins } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { storage } from '@/lib/storage'
@@ -14,6 +14,8 @@ import { KamImportDialog } from '@/components/kam-import-dialog'
 import { SettingsDialog } from '@/components/settings-dialog'
 import { ProxyPoolDialog } from '@/components/proxy-pool-dialog'
 import { CarpoolDialog } from '@/components/carpool-dialog'
+import { CreditsDialog } from '@/components/credits-dialog'
+import { useCreditLedger } from '@/hooks/use-credits'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { useCredentials, useDeleteCredential, useResetFailure, useLoadBalancingMode, useSetLoadBalancingMode, useResetAllSuccessCount, useVersionInfo } from '@/hooks/use-credentials'
 import { getCredentialBalance, forceRefreshToken } from '@/api/credentials'
@@ -36,6 +38,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [proxyPoolDialogOpen, setProxyPoolDialogOpen] = useState(false)
   const [carpoolDialogOpen, setCarpoolDialogOpen] = useState(false)
+  const [creditsDialogOpen, setCreditsDialogOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [verifyDialogOpen, setVerifyDialogOpen] = useState(false)
   const [verifying, setVerifying] = useState(false)
@@ -69,6 +72,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const { data: versionInfo } = useVersionInfo()
   const { mutate: setLoadBalancingMode, isPending: isSettingMode } = useSetLoadBalancingMode()
   const resetAllSuccess = useResetAllSuccessCount()
+
+  // 积分账本（kirors-b 专属）：按凭据 ID 索引，供卡片展示本轮消耗
+  const { data: creditLedger } = useCreditLedger()
+  const creditByCredId = new Map(
+    (creditLedger?.entries ?? []).map((e) => [e.credId, e])
+  )
 
   // 计算分页
   const totalPages = Math.ceil((data?.credentials.length || 0) / itemsPerPage)
@@ -663,6 +672,9 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <Button variant="ghost" size="icon" onClick={() => setCarpoolDialogOpen(true)} title="拼车补号配置">
               <Car className="h-5 w-5" />
             </Button>
+            <Button variant="ghost" size="icon" onClick={() => setCreditsDialogOpen(true)} title="积分消耗统计">
+              <Coins className="h-5 w-5" />
+            </Button>
             <Button variant="ghost" size="icon" onClick={() => setSettingsDialogOpen(true)} title="运行时设置">
               <Settings2 className="h-5 w-5" />
             </Button>
@@ -842,6 +854,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
                     onToggleSelect={() => toggleSelect(credential.id)}
                     balance={balanceMap.get(credential.id) || null}
                     loadingBalance={loadingBalanceIds.has(credential.id)}
+                    credit={creditByCredId.get(credential.id) ?? null}
                   />
                 ))}
               </div>
@@ -916,6 +929,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
       <CarpoolDialog
         open={carpoolDialogOpen}
         onOpenChange={setCarpoolDialogOpen}
+      />
+
+      {/* 积分消耗统计对话框 */}
+      <CreditsDialog
+        open={creditsDialogOpen}
+        onOpenChange={setCreditsDialogOpen}
       />
 
       {/* 批量验活对话框 */}
