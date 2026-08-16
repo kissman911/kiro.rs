@@ -209,7 +209,9 @@ impl EventStreamDecoder {
 
                 // 根据错误类型采用不同的恢复策略
                 self.try_recover(&e);
-                self.state = DecoderState::Recovering;
+                // 恢复后直接回到 Ready，让迭代器继续解析缓冲区中的剩余帧
+                // 旧逻辑设为 Recovering 会导致迭代器终止，丢失尾部合法帧
+                self.state = DecoderState::Ready;
                 Err(e)
             }
         }
@@ -300,11 +302,10 @@ impl<'a> Iterator for DecodeIter<'a> {
     type Item = ParseResult<Frame>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // 如果处于 Stopped 或 Recovering 状态，停止迭代
-        match self.decoder.state {
-            DecoderState::Stopped => return None,
-            DecoderState::Recovering => return None,
-            _ => {}
+        // 仅在 Stopped 时终止迭代
+        // Recovering 状态下继续尝试解析（try_recover 已跳过坏数据）
+        if self.decoder.state == DecoderState::Stopped {
+            return None;
         }
 
         match self.decoder.decode() {
