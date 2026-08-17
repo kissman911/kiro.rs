@@ -612,11 +612,7 @@ fn model_supports_xhigh_effort(model_id: &str) -> bool {
     )
 }
 
-/// 模型是否**接受** native `output_config`（additionalModelRequestFields）而不报 400。
-///
-/// 注意：接受 ≠ 会回 `reasoningContentEvent`。这个白名单只用来决定「能不能下发
-/// effort」，**不能**用来判断 thinking 由谁提供 —— 那要用
-/// [`model_emits_native_reasoning`]。两者混用会导致 thinking 直接消失。
+/// 模型是否接受原生 output_config（additionalModelRequestFields）。
 ///
 /// Kiro `ListAvailableModels`（2026-06）确认：Opus 4.6/4.7/4.8、Sonnet 4.6 接受。
 /// Claude 5 系（fable-5 / mythos-5 / sonnet-5 / opus-5 / claude-5）一并视为支持。
@@ -631,33 +627,6 @@ fn model_supports_native_reasoning(model_id: &str) -> bool {
         || m.contains("sonnet-5")
         || m.contains("opus-5")
         || m.contains("claude-5")
-}
-
-/// 模型是否**真的回** native `reasoningContentEvent`（即 thinking 由 native 通道提供）。
-///
-/// 这是 2026-08-17 在 kirors-c 上逐模型流式实测的结果（按 signature 来源区分：
-/// 上游真签名 = NATIVE，占位签名 + 有 thinking = 靠 prompt 层 `<thinking>` 标签）：
-///
-/// | 模型 | 接受 output_config | 回 reasoning 事件 |
-/// |---|---|---|
-/// | claude-opus-5   | 是 | **是** |
-/// | claude-opus-4.8 | 是 | **是** |
-/// | claude-opus-4.7 | 是 | **是** |
-/// | claude-opus-4.6 | 是 | 否（靠 prompt 标签） |
-/// | claude-sonnet-4.6 | 是 | 否（靠 prompt 标签） |
-/// | claude-sonnet-5 | 是 | 否（本轮未产出 thinking） |
-///
-/// 只有这里返回 true 的模型才允许抑制 prompt 层前缀；否则掐掉前缀等于让该模型
-/// **彻底失去 thinking**（opus-4.6 是默认模型，回归影响面大）。
-///
-/// 上游若后续给更多模型开了 native reasoning，需要重新实测再加进来 —— 加晚了只是
-/// 继续走 prompt 通道（可能偶发裸标签泄漏），加早了直接丢 thinking，故宁可加晚。
-fn model_emits_native_reasoning(model_id: &str) -> bool {
-    let m = model_id.to_ascii_lowercase();
-    matches!(
-        m.as_str(),
-        "claude-opus-5" | "claude-opus-4.7" | "claude-opus-4.8"
-    )
 }
 
 /// 本次请求是否请求了原生 reasoning。
@@ -682,43 +651,6 @@ fn native_reasoning_requested(req: &MessagesRequest, model_id: &str) -> bool {
             .is_some_and(|e| !e.level.trim().is_empty())
 }
 
-/// 本次请求是否要下发 native `output_config.effort`。
-///
-/// 注意这不等于「thinking 由 native 提供」：部分模型（如 opus-4.6）接受 effort
-/// 但仍以 prompt 标签形式吐 thinking。前缀抑制请用 [`native_reasoning_supersedes_prompt`]。
-fn native_effort_should_be_sent(req: &MessagesRequest, model_id: &str) -> bool {
-    // 显式关闭 thinking：不下发任何 reasoning 字段。
-    if req
-        .thinking
-        .as_ref()
-        .is_some_and(|t| t.thinking_type == "disabled")
-    {
-        return false;
-    }
-
-    // 仅对确认接受 output_config 的模型下发，避免上游 400。
-    if !model_supports_native_reasoning(model_id) {
-        return false;
-    }
-
-    // 需要客户端确实请求了 reasoning。
-    native_reasoning_requested(req, model_id)
-}
-
-/// native reasoning 是否已接管 thinking，从而 prompt 层前缀应该让位。
-///
-/// 两条 thinking 驱动通道不能同时开：上游既回 native `reasoningContentEvent`，
-/// 模型又被 prompt 里的 `<thinking_mode>` 诱导在正文里另吐字面 `<thinking>` 标签时，
-/// 响应侧只有一个 thinking 状态机，native 事件先把它占住，后到的字面标签就只能
-/// 原样当正文发出 —— 客户端于是渲染出裸标签和整段思考。
-///
-/// 必须同时满足「会下发 effort」与「确认会回 reasoning 事件」两个条件。只看前者
-/// 会把 opus-4.6 / sonnet-4.6 / sonnet-5 的 thinking 直接揄掉（它们接受 effort 却不回
-/// native 事件，完全依赖 prompt 标签）。
-fn native_reasoning_supersedes_prompt(req: &MessagesRequest, model_id: &str) -> bool {
-    native_effort_should_be_sent(req, model_id) && model_emits_native_reasoning(model_id)
-}
-
 /// 组装真实 Kiro wire 字段 additionalModelRequestFields.output_config.effort。
 fn build_additional_model_request_fields(
     req: &MessagesRequest,
@@ -726,7 +658,22 @@ fn build_additional_model_request_fields(
 ) -> Option<crate::kiro::model::requests::kiro::AdditionalModelRequestFields> {
     use crate::kiro::model::requests::kiro::{AdditionalModelRequestFields, KiroOutputConfig};
 
-    if !native_effort_should_be_sent(req, model_id) {
+    // 显式关闭 thinking：不下发任何 reasoning 字段。
+    if req
+        .thinking
+        .as_ref()
+        .is_some_and(|t| t.thinking_type == "disabled")
+    {
+        return None;
+    }
+
+    // 仅对确认接受 output_config 的模型下发，避免上游 400。
+    if !model_supports_native_reasoning(model_id) {
+        return None;
+    }
+
+    // 需要客户端确实请求了 reasoning。
+    if !native_reasoning_requested(req, model_id) {
         return None;
     }
 
@@ -1372,25 +1319,8 @@ fn build_history(
 ) -> Result<Vec<Message>, ConversionError> {
     let mut history = Vec::new();
 
-    // 生成 thinking 前缀（如果需要）。
-    //
-    // 仅当 native reasoning 确认接管 thinking 时才**不注入** prompt 层前缀：此时
-    // 上游会直接回 `reasoningContentEvent`，thinking 由 native 通道独占。两条通道
-    // 同时开时，模型会被前缀诱导在正文里另吐一份字面 `<thinking>…</thinking>`，而
-    // 响应侧状态机的 thinking 块已被 native 事件占用，这份字面标签只能原样当正文
-    // 发出，客户端就渲染出裸标签和思考过程。工具调用越密集、上下文越长越容易触发。
-    //
-    // 反之，像 opus-4.6 / sonnet-4.6 这种「接受 effort 但不回 native 事件」的模型，
-    // prompt 前缀是它们 thinking 的**唯一**来源，揄了就彻底没 thinking 了。
-    let thinking_prefix = if native_reasoning_supersedes_prompt(req, model_id) {
-        tracing::debug!(
-            model_id = %model_id,
-            "native reasoning 接管 thinking，跳过 prompt 层前缀注入"
-        );
-        None
-    } else {
-        generate_thinking_prefix(req)
-    };
+    // 生成thinking前缀（如果需要）
+    let thinking_prefix = generate_thinking_prefix(req);
 
     // 1. 处理系统消息
     if let Some(ref system) = req.system {
@@ -2989,106 +2919,6 @@ mod tests {
     }
 
     #[test]
-    fn test_native_reasoning_suppresses_prompt_thinking_prefix() {
-        // 双通道防护：仅对**实测确认会回 native reasoningContentEvent** 的模型，
-        // prompt 层 thinking 前缀必须不注入。两边同时开会让模型在正文里另吐字面
-        // <thinking> 标签，而响应侧 thinking 块已被 native 事件占用，那份字面标签
-        // 只能原样漏成正文。
-        for model in ["claude-opus-5", "claude-opus-4-7", "claude-opus-4-8"] {
-            let mut req = base_req(vec![user_msg("分析一下")]);
-            req.model = model.to_string();
-            req.thinking = Some(super::super::types::Thinking {
-                thinking_type: "adaptive".to_string(),
-                budget_tokens: 20000,
-            });
-            req.output_config = Some(super::super::types::OutputConfig {
-                effort: "high".to_string(),
-            });
-
-            let result = convert_request(&req).unwrap();
-
-            // native effort 字段必须照常下发 —— thinking 能力不能丢
-            assert!(
-                result.additional_model_request_fields.is_some(),
-                "{model}: additionalModelRequestFields 应存在"
-            );
-
-            // 但 prompt 层标签一律不得出现在任何历史/当前消息里
-            let json = serde_json::to_string(&result.conversation_state).unwrap();
-            assert!(
-                !json.contains("<thinking_mode>"),
-                "{model}: native 接管时不得注入 prompt 层 thinking_mode: {json}"
-            );
-            assert!(
-                !json.contains("<thinking_effort>"),
-                "{model}: native 接管时不得注入 prompt 层 thinking_effort"
-            );
-            assert!(
-                !json.contains("<max_thinking_length>"),
-                "{model}: native 接管时不得注入 prompt 层 max_thinking_length"
-            );
-        }
-    }
-
-    #[test]
-    fn test_prompt_prefix_kept_for_models_that_accept_effort_but_emit_no_native_reasoning() {
-        // 回归锁（2026-08-17 kirors-c 实测）：opus-4.6 / sonnet-4.6 接受 output_config
-        // （不报 400），但上游**不回** reasoningContentEvent，thinking 完全靠 prompt 层
-        // `<thinking>` 标签。若把「接受 effort」当成「native 接管」而揄掉前缀，这些模型
-        // 会彻底失去 thinking。opus-4.6 是默认模型，回归影响面比原泄漏 bug 更大。
-        for model in ["claude-opus-4-6", "claude-sonnet-4-6"] {
-            let mut req = base_req(vec![user_msg("分析一下")]);
-            req.model = model.to_string();
-            req.thinking = Some(super::super::types::Thinking {
-                thinking_type: "adaptive".to_string(),
-                budget_tokens: 20000,
-            });
-            req.output_config = Some(super::super::types::OutputConfig {
-                effort: "high".to_string(),
-            });
-
-            let result = convert_request(&req).unwrap();
-
-            // effort 仍照常下发（上游接受，不能因为不回事件就不发）
-            assert!(
-                result.additional_model_request_fields.is_some(),
-                "{model}: 仍应下发 native output_config.effort"
-            );
-
-            // prompt 前缀必须保留 —— 这是它们 thinking 的唯一来源
-            let json = serde_json::to_string(&result.conversation_state).unwrap();
-            assert!(
-                json.contains("<thinking_mode>adaptive</thinking_mode>"),
-                "{model}: 上游不回 native reasoning，必须保留 prompt 层前缀: {json}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_prompt_thinking_prefix_kept_when_native_unsupported() {
-        // 回退路径：模型不接受 native output_config 时，prompt 层前缀仍是唯一
-        // thinking 驱动，必须保留，否则这些模型直接没了 thinking。
-        let mut req = base_req(vec![user_msg("分析一下")]);
-        req.model = "claude-sonnet-4-5".to_string(); // 不在 native 白名单
-        req.thinking = Some(super::super::types::Thinking {
-            thinking_type: "enabled".to_string(),
-            budget_tokens: 8000,
-        });
-
-        let result = convert_request(&req).unwrap();
-        assert!(
-            result.additional_model_request_fields.is_none(),
-            "非白名单模型不应下发 native output_config"
-        );
-
-        let json = serde_json::to_string(&result.conversation_state).unwrap();
-        assert!(
-            json.contains("<thinking_mode>enabled</thinking_mode>"),
-            "native 不可用时必须保留 prompt 层 thinking 前缀: {json}"
-        );
-    }
-
-    #[test]
     fn test_thinking_adaptive_effort_still_works() {
         let mut req = base_req(vec![user_msg("分析一下")]);
         req.thinking = Some(super::super::types::Thinking {
@@ -3100,9 +2930,26 @@ mod tests {
         });
 
         let result = convert_request(&req).unwrap();
+        let state = &result.conversation_state;
 
-        // native effort 字段仍应正常下发（本例走 native 单驱动，prompt 前缀按设计不注入，
-        // 前缀抑制行为由 test_native_reasoning_suppresses_prompt_thinking_prefix 单独固定）
+        let first_user = state
+            .history
+            .iter()
+            .find_map(|m| match m {
+                Message::User(u) => Some(u.user_input_message.content.clone()),
+                _ => None,
+            })
+            .expect("adaptive 模式应注入 thinking 消息");
+        assert!(
+            first_user.contains("<thinking_mode>adaptive</thinking_mode>"),
+            "adaptive 标签应注入: {first_user}"
+        );
+        assert!(
+            first_user.contains("<thinking_effort>high</thinking_effort>"),
+            "effort 应注入: {first_user}"
+        );
+
+        // native effort 字段仍应正常下发
         let fields = result.additional_model_request_fields;
         assert!(fields.is_some(), "additionalModelRequestFields 应存在");
     }
