@@ -250,12 +250,42 @@ fn build_request_identity(req: &MessagesRequest) -> RequestIdentityData {
     }
 }
 
+/// 定位末尾「连续 user 消息」游程的起始下标。
+///
+/// 经过 `validate_and_trim_messages` 后末尾必为 user，因此返回值一定指向一条 user 消息。
+/// 该游程整体属于 currentMessage，不进入历史——否则会出现「历史里有 user 却没有对应
+/// assistant」的空洞，早期实现用伪造的 `assistant: "OK"` 去填，反而把 OK 应答模式
+/// 注入上下文，诱导模型复刻出「OK」这种空回复。
+fn trailing_user_run_start(messages: &[super::types::Message]) -> usize {
+    let mut start = messages.len().saturating_sub(1);
+    while start > 0 && messages[start - 1].role == "user" {
+        start -= 1;
+    }
+    start
+}
+
+/// 构建 currentMessage 数据。
+///
+/// `trailing_user_messages` 是末尾连续 user 游程（通常只有一条）。多条时按顺序合并
+/// 文本、图片与 tool_result，使其作为单条 currentMessage 下发。
 fn build_current_message_data(
-    last_message: &super::types::Message,
+    trailing_user_messages: &[super::types::Message],
 ) -> Result<CurrentMessageData, ConversionError> {
-    let (text_content, images, tool_results) = process_message_content(&last_message.content)?;
+    let mut text_parts = Vec::new();
+    let mut images = Vec::new();
+    let mut tool_results = Vec::new();
+
+    for msg in trailing_user_messages {
+        let (text, msg_images, msg_tool_results) = process_message_content(&msg.content)?;
+        if !text.is_empty() {
+            text_parts.push(text);
+        }
+        images.extend(msg_images);
+        tool_results.extend(msg_tool_results);
+    }
+
     Ok(CurrentMessageData {
-        text_content,
+        text_content: text_parts.join("\n"),
         images,
         tool_results,
     })
@@ -417,10 +447,17 @@ pub fn convert_request(req: &MessagesRequest) -> Result<ConversionResult, Conver
 
     let messages = validate_and_trim_messages(req)?;
     let identity = build_request_identity(req);
-    let current = build_current_message_data(messages.last().unwrap())?;
+    let current_start = trailing_user_run_start(messages);
+    let current = build_current_message_data(&messages[current_start..])?;
 
     let mut tool_name_map = HashMap::new();
-    let mut history = build_history(req, messages, &model_id, &mut tool_name_map)?;
+    let mut history = build_history(
+        req,
+        messages,
+        current_start,
+        &model_id,
+        &mut tool_name_map,
+    )?;
     let tools = convert_tools(&req.tools, &mut tool_name_map);
 
     let (validated_tool_results, orphaned_tool_use_ids) =
@@ -1270,10 +1307,13 @@ fn has_thinking_tags(content: &str) -> bool {
 /// * `messages` - 经过 prefill 预处理的消息切片，末尾必定是 user 消息。
 ///   注意：该切片与 `req.messages` 可能不同（prefill 时会截断末尾的 assistant 消息），
 ///   调用方应始终使用此参数而非 `req.messages`。
+/// * `history_end_index` - 历史的排他上界，即末尾连续 user 游程的起始下标。
+///   该游程归 currentMessage，不进历史。
 /// * `model_id` - 已映射的 Kiro 模型 ID
 fn build_history(
     req: &MessagesRequest,
     messages: &[super::types::Message],
+    history_end_index: usize,
     model_id: &str,
     tool_name_map: &mut HashMap<String, String>,
 ) -> Result<Vec<Message>, ConversionError> {
@@ -1336,9 +1376,9 @@ fn build_history(
     }
 
     // 2. 处理常规消息历史
-    // 最后一条消息作为 currentMessage，不加入历史
-    // 经过 prefill 预处理后，messages 末尾必定是 user，故直接截掉最后一条即可
-    let history_end_index = messages.len().saturating_sub(1);
+    // 末尾连续的 user 游程作为 currentMessage，由调用方通过 history_end_index 截断，
+    // 因此历史天然以 assistant 收尾，无需任何伪造的配对消息。
+    let history_end_index = history_end_index.min(messages.len());
 
     // 收集并配对消息
     let mut user_buffer: Vec<&super::types::Message> = Vec::new();
@@ -1373,14 +1413,17 @@ fn build_history(
         history.push(Message::Assistant(merged));
     }
 
-    // 处理结尾的孤立 user 消息
+    // 末尾不应再残留未配对的 user 消息：末尾 user 游程已归入 currentMessage。
+    // 这里仅作防御性兜底，且绝不伪造 assistant 应答——历史里注入 "OK" 之类的空回复
+    // 会污染上下文，让模型复刻该模式。
+    debug_assert!(
+        user_buffer.is_empty(),
+        "历史末尾出现未配对的 user 消息，history_end_index 计算有误"
+    );
     if !user_buffer.is_empty() {
+        tracing::warn!("历史末尾存在未配对的 user 消息，按原样保留且不伪造 assistant 应答");
         let merged_user = merge_user_messages(&user_buffer, model_id)?;
         history.push(Message::User(merged_user));
-
-        // 自动配对一个 "OK" 的 assistant 响应
-        let auto_assistant = HistoryAssistantMessage::new("OK");
-        history.push(Message::Assistant(auto_assistant));
     }
 
     Ok(history)
@@ -2693,5 +2736,263 @@ mod tests {
             }
         }
         assert!(found_tool_use, "合并后的 assistant 消息应包含 tool_use");
+    }
+
+    // === 回归测试：历史中不得出现伪造的 assistant "OK" ===
+
+    fn base_req(messages: Vec<super::super::types::Message>) -> MessagesRequest {
+        MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages,
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            thinking: None,
+            output_config: None,
+            effort: None,
+            metadata: None,
+        }
+    }
+
+    fn user_msg(text: &str) -> super::super::types::Message {
+        super::super::types::Message {
+            role: "user".to_string(),
+            content: serde_json::json!(text),
+        }
+    }
+
+    fn assistant_msg(text: &str) -> super::super::types::Message {
+        super::super::types::Message {
+            role: "assistant".to_string(),
+            content: serde_json::json!(text),
+        }
+    }
+
+    /// 收集历史里所有 assistant 文本，用于断言没有被注入伪造应答
+    fn history_assistant_texts(state: &ConversationState) -> Vec<String> {
+        state
+            .history
+            .iter()
+            .filter_map(|m| match m {
+                Message::Assistant(a) => Some(
+                    a.assistant_response_message
+                        .content
+                        .clone(),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_trailing_user_run_never_injects_fake_ok() {
+        // 末尾连续两条 user（工具调用密集场景常见），旧实现会伪造 assistant "OK"
+        let req = base_req(vec![
+            user_msg("第一个问题"),
+            assistant_msg("第一个回答"),
+            user_msg("补充上下文"),
+            user_msg("真正的问题"),
+        ]);
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let texts = history_assistant_texts(&state);
+
+        assert!(
+            !texts.iter().any(|t| t.trim() == "OK"),
+            "历史中不应出现伪造的 assistant \"OK\"，实际: {:?}",
+            texts
+        );
+    }
+
+    #[test]
+    fn test_trailing_user_run_merged_into_current_message() {
+        // 末尾连续 user 应合并进 currentMessage，内容不能丢
+        let req = base_req(vec![
+            user_msg("第一个问题"),
+            assistant_msg("第一个回答"),
+            user_msg("补充上下文"),
+            user_msg("真正的问题"),
+        ]);
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let current = &state.current_message.user_input_message.content;
+
+        assert!(current.contains("补充上下文"), "currentMessage 应含前一条 user 内容: {current}");
+        assert!(current.contains("真正的问题"), "currentMessage 应含最后一条 user 内容: {current}");
+
+        // 这两条都归 currentMessage，不应再出现在历史里
+        let history_user_texts: Vec<String> = state
+            .history
+            .iter()
+            .filter_map(|m| match m {
+                Message::User(u) => Some(u.user_input_message.content.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !history_user_texts.iter().any(|t| t.contains("真正的问题")),
+            "最后一条 user 不应进入历史: {history_user_texts:?}"
+        );
+    }
+
+    #[test]
+    fn test_history_ends_with_assistant_after_fix() {
+        let req = base_req(vec![
+            user_msg("Q1"),
+            assistant_msg("A1"),
+            user_msg("孤立补充"),
+            user_msg("当前问题"),
+        ]);
+
+        let state = convert_request(&req).unwrap().conversation_state;
+
+        // 历史应成对收尾（最后一条是 assistant），无需伪造填充
+        if let Some(last) = state.history.last() {
+            assert!(
+                matches!(last, Message::Assistant(_)),
+                "历史应以 assistant 收尾，实际末尾是 user"
+            );
+        }
+    }
+
+    #[test]
+    fn test_single_trailing_user_behaviour_unchanged() {
+        // 常规单条末尾 user：行为与修复前一致
+        let req = base_req(vec![
+            user_msg("Q1"),
+            assistant_msg("A1"),
+            user_msg("Q2"),
+        ]);
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        assert_eq!(
+            state.current_message.user_input_message.content, "Q2",
+            "单条末尾 user 应原样作为 currentMessage"
+        );
+        let texts = history_assistant_texts(&state);
+        assert!(texts.iter().any(|t| t == "A1"), "真实 assistant 回复应保留");
+        assert!(!texts.iter().any(|t| t.trim() == "OK"), "不应有伪造 OK");
+    }
+
+    #[test]
+    fn test_thinking_enabled_still_works_with_trailing_user_run() {
+        // 修复后 thinking 注入必须照常工作
+        let mut req = base_req(vec![
+            user_msg("上一轮"),
+            assistant_msg("上一轮回答"),
+            user_msg("补充"),
+            user_msg("请深度思考这个问题"),
+        ]);
+        req.thinking = Some(super::super::types::Thinking {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 8000,
+        });
+
+        let state = convert_request(&req).unwrap().conversation_state;
+
+        // thinking 前缀应作为首条历史 user 消息注入
+        let first_user = state
+            .history
+            .iter()
+            .find_map(|m| match m {
+                Message::User(u) => Some(u.user_input_message.content.clone()),
+                _ => None,
+            })
+            .expect("应存在注入的 system/thinking user 消息");
+        assert!(
+            first_user.contains("<thinking_mode>enabled</thinking_mode>"),
+            "thinking 标签应被注入: {first_user}"
+        );
+        assert!(
+            first_user.contains("<max_thinking_length>8000</max_thinking_length>"),
+            "budget_tokens 应被注入: {first_user}"
+        );
+
+        let texts = history_assistant_texts(&state);
+        assert!(
+            !texts.iter().any(|t| t.trim() == "OK"),
+            "thinking 模式下也不应出现伪造 OK: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn test_thinking_adaptive_effort_still_works() {
+        let mut req = base_req(vec![user_msg("分析一下")]);
+        req.thinking = Some(super::super::types::Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        req.output_config = Some(super::super::types::OutputConfig {
+            effort: "high".to_string(),
+        });
+
+        let result = convert_request(&req).unwrap();
+        let state = &result.conversation_state;
+
+        let first_user = state
+            .history
+            .iter()
+            .find_map(|m| match m {
+                Message::User(u) => Some(u.user_input_message.content.clone()),
+                _ => None,
+            })
+            .expect("adaptive 模式应注入 thinking 消息");
+        assert!(
+            first_user.contains("<thinking_mode>adaptive</thinking_mode>"),
+            "adaptive 标签应注入: {first_user}"
+        );
+        assert!(
+            first_user.contains("<thinking_effort>high</thinking_effort>"),
+            "effort 应注入: {first_user}"
+        );
+
+        // native effort 字段仍应正常下发
+        let fields = result.additional_model_request_fields;
+        assert!(fields.is_some(), "additionalModelRequestFields 应存在");
+    }
+
+    #[test]
+    fn test_serialized_payload_has_no_fake_ok() {
+        // End-to-end: the JSON actually sent upstream must not contain a
+        // fabricated assistant "OK" turn.
+        let mut req = base_req(vec![
+            user_msg("Q1"),
+            assistant_msg("A1"),
+            user_msg("tool result follow-up"),
+            user_msg("continue"),
+        ]);
+        req.thinking = Some(super::super::types::Thinking {
+            thinking_type: "enabled".to_string(),
+            budget_tokens: 12000,
+        });
+
+        let state = convert_request(&req).unwrap().conversation_state;
+        let json = serde_json::to_string(&state).unwrap();
+
+        assert!(
+            !json.contains("\"content\":\"OK\""),
+            "serialized payload must not contain a fabricated assistant OK"
+        );
+    }
+
+    #[test]
+    fn test_trailing_user_run_start_helper() {
+        let msgs = vec![
+            user_msg("a"),
+            assistant_msg("b"),
+            user_msg("c"),
+            user_msg("d"),
+            user_msg("e"),
+        ];
+        assert_eq!(trailing_user_run_start(&msgs), 2, "应定位到连续 user 游程起点");
+
+        let msgs2 = vec![user_msg("a"), assistant_msg("b"), user_msg("c")];
+        assert_eq!(trailing_user_run_start(&msgs2), 2, "单条末尾 user");
+
+        let msgs3 = vec![user_msg("only")];
+        assert_eq!(trailing_user_run_start(&msgs3), 0, "仅一条 user");
     }
 }
