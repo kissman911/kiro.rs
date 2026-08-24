@@ -726,9 +726,46 @@ impl KiroProvider {
             .body(body)
             .header("content-type", content_type)
             .header("Connection", "close");
-        let response = endpoint.decorate_api(base, &rctx).send().await?;
+
+        // 可观测性埋点：流式请求走的是这条固定凭据路径（executor →
+        // call_api_stream_with_context → 本函数），而不是带重试的
+        // call_api_with_retry。排查间歇性上游静默时，必须能把单条卡死请求
+        // 关联到具体凭据与出口 IP，否则无法区分「某张凭据坏」与「上游随机故障」。
+        let model = Self::extract_model_from_request(request_body);
+        let api_type_label = if is_stream { "流式" } else { "非流式" };
+        tracing::info!(
+            credential_id = ctx.id,
+            credential_name = ctx.credentials.display_name.as_deref().unwrap_or("-"),
+            proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+            model = model.as_deref().unwrap_or("-"),
+            api_type = api_type_label,
+            "派发上游请求（固定凭据）"
+        );
+        let dispatch_started = std::time::Instant::now();
+
+        let response = match endpoint.decorate_api(base, &rctx).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::warn!(
+                    credential_id = ctx.id,
+                    proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+                    elapsed_ms = dispatch_started.elapsed().as_millis() as u64,
+                    "固定凭据 API 请求发送失败: {}",
+                    e
+                );
+                return Err(e.into());
+            }
+        };
 
         if response.status().is_success() {
+            tracing::info!(
+                credential_id = ctx.id,
+                credential_name = ctx.credentials.display_name.as_deref().unwrap_or("-"),
+                proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+                model = model.as_deref().unwrap_or("-"),
+                headers_ms = dispatch_started.elapsed().as_millis() as u64,
+                "上游响应头就绪（固定凭据）"
+            );
             self.token_manager.report_success(ctx.id);
             return Ok(response);
         }
@@ -736,6 +773,13 @@ impl KiroProvider {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let api_type = if is_stream { "流式" } else { "非流式" };
+        tracing::warn!(
+            credential_id = ctx.id,
+            proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+            status = status.as_u16(),
+            headers_ms = dispatch_started.elapsed().as_millis() as u64,
+            "上游返回非 2xx（固定凭据）"
+        );
 
         if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
             self.token_manager.report_quota_exhausted(ctx.id);

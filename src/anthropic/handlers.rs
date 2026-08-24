@@ -613,6 +613,36 @@ fn create_stall_error_sse(silent_secs: u64) -> Bytes {
     Bytes::from(format!("event: error\ndata: {}\n\n", payload))
 }
 
+/// 事件里是否含「真内容」（模型实际产出的文本或思考）。
+///
+/// 只认 `text_delta` / `thinking_delta` 且非空字符串。刑除：
+/// - `content_block_start` / `content_block_stop` / `message_start` 等结构性事件
+/// - `signature_delta`（本地占位，不代表上游在吐字）
+/// - `ping`
+///
+/// 否则上游只需吐几个空壳事件就能无限重置静默计时器，看门狗永远不会开火。
+fn events_have_real_content(events: &[SseEvent]) -> bool {
+    events.iter().any(|e| {
+        if e.event != "content_block_delta" {
+            return false;
+        }
+        let Some(delta) = e.data.get("delta") else {
+            return false;
+        };
+        match delta.get("type").and_then(|t| t.as_str()) {
+            Some("text_delta") => delta
+                .get("text")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            Some("thinking_delta") => delta
+                .get("thinking")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            _ => false,
+        }
+    })
+}
+
 /// 流式请求进度追踪：用于首字延迟观测与上游静默检测。
 struct StreamProgress {
     started: std::time::Instant,
@@ -704,9 +734,10 @@ pub(crate) fn create_sse_stream(
                                 }
                             }
 
-                            // 只有真正产出下发事件才算「上游在吐内容」；
-                            // 空批次（如仅 metadata 帧）不重置静默计时。
-                            if !events.is_empty() {
+                            // 只有真正的文本/思考增量才算「上游在吐内容」。
+                            // 结构性事件（block start/stop、signature 占位）与空批次
+                            // 不重置静默计时，否则上游只靠空壳事件就能绕过看门狗。
+                            if events_have_real_content(&events) {
                                 progress.note_content();
                             }
 
