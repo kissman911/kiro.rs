@@ -581,9 +581,76 @@ async fn handle_stream_request(
 /// Ping 事件间隔（25秒）
 const PING_INTERVAL_SECS: u64 = 25;
 
+/// 上游静默看门狗阈值（秒）。
+///
+/// 观测到的故障形态：上游收下请求后长时间既不报错也不吐内容，我们却仍在给客户端
+/// 发 ping 保活，最终交出一个 HTTP 200 + 近乎空响应的「假成功」（落库 1 token /
+/// 约 124 秒）。客户端无法区分这种假成功与正常结束，只能干等。
+///
+/// 这里主动在 90 秒无任何真实内容事件时断流并显式报错，让上层能重试。
+const UPSTREAM_STALL_TIMEOUT_SECS: u64 = 90;
+
 /// 创建 ping 事件的 SSE 字符串
 fn create_ping_sse() -> Bytes {
     Bytes::from("event: ping\ndata: {\"type\": \"ping\"}\n\n")
+}
+
+/// 上游静默超时的显式错误事件。
+///
+/// 故意不复用 `generate_final_events()`：那条路径会产出一个看起来正常结束的
+/// `message_stop`，正是「假成功」的来源。
+fn create_stall_error_sse(silent_secs: u64) -> Bytes {
+    let payload = json!({
+        "type": "error",
+        "error": {
+            "type": "upstream_stall",
+            "message": format!(
+                "Upstream produced no content for {}s; stream aborted so the client can retry.",
+                silent_secs
+            )
+        }
+    });
+    Bytes::from(format!("event: error\ndata: {}\n\n", payload))
+}
+
+/// 流式请求进度追踪：用于首字延迟观测与上游静默检测。
+struct StreamProgress {
+    started: std::time::Instant,
+    last_content_at: std::time::Instant,
+    first_content_logged: bool,
+    content_batches: u64,
+    model: String,
+}
+
+impl StreamProgress {
+    fn new(model: &str) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last_content_at: now,
+            first_content_logged: false,
+            content_batches: 0,
+            model: model.to_string(),
+        }
+    }
+
+    /// 记录一批真实内容事件；首批额外打首字延迟。
+    fn note_content(&mut self) {
+        self.last_content_at = std::time::Instant::now();
+        self.content_batches += 1;
+        if !self.first_content_logged {
+            self.first_content_logged = true;
+            tracing::info!(
+                model = %self.model,
+                ttfc_ms = self.started.elapsed().as_millis() as u64,
+                "上游首个内容事件"
+            );
+        }
+    }
+
+    fn silent_secs(&self) -> u64 {
+        self.last_content_at.elapsed().as_secs()
+    }
 }
 
 /// 创建 SSE 事件流
@@ -602,9 +669,11 @@ pub(crate) fn create_sse_stream(
     // 然后处理 Kiro 响应流，同时每25秒发送 ping 保活
     let body_stream = response.bytes_stream();
 
+    let progress = StreamProgress::new(&ctx.model);
+
     let processing_stream = stream::unfold(
-        (body_stream, ctx, EventStreamDecoder::new(), false, interval(Duration::from_secs(PING_INTERVAL_SECS))),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
+        (body_stream, ctx, EventStreamDecoder::new(), false, interval(Duration::from_secs(PING_INTERVAL_SECS)), progress),
+        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, mut progress)| async move {
             if finished {
                 return None;
             }
@@ -635,40 +704,74 @@ pub(crate) fn create_sse_stream(
                                 }
                             }
 
+                            // 只有真正产出下发事件才算「上游在吐内容」；
+                            // 空批次（如仅 metadata 帧）不重置静默计时。
+                            if !events.is_empty() {
+                                progress.note_content();
+                            }
+
                             // 转换为 SSE 字节流
                             let bytes: Vec<Result<Bytes, Infallible>> = events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, progress)))
                         }
                         Some(Err(e)) => {
-                            tracing::error!("读取响应流失败: {}", e);
+                            tracing::error!(
+                                model = %progress.model,
+                                elapsed_ms = progress.started.elapsed().as_millis() as u64,
+                                content_batches = progress.content_batches,
+                                "读取响应流失败: {}", e
+                            );
                             // 发送最终事件并结束
                             let final_events = ctx.generate_final_events();
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, progress)))
                         }
                         None => {
-                            // 流结束，发送最终事件
+                            // 流结束：内容为空的「静默成功」是假成功，需要留痕以便统计。
+                            if progress.content_batches == 0 {
+                                tracing::warn!(
+                                    model = %progress.model,
+                                    elapsed_ms = progress.started.elapsed().as_millis() as u64,
+                                    "上游流结束但从未产出任何内容事件"
+                                );
+                            }
                             let final_events = ctx.generate_final_events();
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, progress)))
                         }
                     }
                 }
-                // 发送 ping 保活
+                // ping 保活 tick：同时作为上游静默看门狗的检查点
                 _ = ping_interval.tick() => {
+                    let silent = progress.silent_secs();
+                    if silent >= UPSTREAM_STALL_TIMEOUT_SECS {
+                        tracing::error!(
+                            model = %progress.model,
+                            silent_secs = silent,
+                            elapsed_ms = progress.started.elapsed().as_millis() as u64,
+                            content_batches = progress.content_batches,
+                            "上游静默超阈值，主动断流并显式报错"
+                        );
+                        let bytes: Vec<Result<Bytes, Infallible>> =
+                            vec![Ok(create_stall_error_sse(silent))];
+                        return Some((
+                            stream::iter(bytes),
+                            (body_stream, ctx, decoder, true, ping_interval, progress),
+                        ));
+                    }
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, progress)))
                 }
             }
         },

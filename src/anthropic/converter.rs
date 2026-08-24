@@ -656,7 +656,9 @@ fn build_additional_model_request_fields(
     req: &MessagesRequest,
     model_id: &str,
 ) -> Option<crate::kiro::model::requests::kiro::AdditionalModelRequestFields> {
-    use crate::kiro::model::requests::kiro::{AdditionalModelRequestFields, KiroOutputConfig};
+    use crate::kiro::model::requests::kiro::{
+        AdditionalModelRequestFields, KiroOutputConfig, KiroThinkingConfig,
+    };
 
     // 显式关闭 thinking：不下发任何 reasoning 字段。
     if req
@@ -678,8 +680,23 @@ fn build_additional_model_request_fields(
     }
 
     let effort = select_native_reasoning_effort(req, model_id);
-    tracing::info!(model_id = %model_id, effort = %effort, "下发原生 output_config.effort");
+
+    // 与真实 Kiro IDE 对齐：adaptive 模式必须同时下发 thinking{type,display}，
+    // 否则上游可能不增量吐思考流（长静默 + 空响应）。
+    let thinking = req
+        .thinking
+        .as_ref()
+        .filter(|t| t.thinking_type == "adaptive")
+        .map(|_| KiroThinkingConfig::adaptive_summarized());
+
+    tracing::info!(
+        model_id = %model_id,
+        effort = %effort,
+        thinking_display = thinking.as_ref().map(|t| t.display.as_str()).unwrap_or("-"),
+        "下发原生 output_config.effort"
+    );
     Some(AdditionalModelRequestFields {
+        thinking,
         output_config: Some(KiroOutputConfig { effort }),
     })
 }

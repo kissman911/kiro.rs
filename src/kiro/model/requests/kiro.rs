@@ -56,9 +56,44 @@ pub struct KiroRequest {
 /// 所以这个结构 **不能** 继承 `rename_all = "camelCase"`。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AdditionalModelRequestFields {
+    /// thinking 配置（adaptive + display）。
+    ///
+    /// 真实 Kiro IDE 与 `output_config` **一同**下发这个字段，字段序在前。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<KiroThinkingConfig>,
     /// 输出配置（含 reasoning effort）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<KiroOutputConfig>,
+}
+
+/// 真实 Kiro IDE 在 `additionalModelRequestFields` 内同时下发的 thinking 配置。
+///
+/// 出处：Kiro IDE 0.12.333 `extension.js`，effort 分支返回值整体即
+/// `additionalModelRequestFields`：
+/// ```json
+/// {
+///     "thinking": { "type": "adaptive", "display": "summarized" },
+///     "output_config": { "effort": "high" }
+/// }
+/// ```
+/// `display: "summarized"` 要求上游**增量**下发摘要版思考流。此前我们只发
+/// `output_config` 而漏掉整个 `thinking` 键，疑似导致上游把思考缓存到结束才输出，
+/// 表现为长时间静默后返回空响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KiroThinkingConfig {
+    #[serde(rename = "type")]
+    pub thinking_type: String,
+    pub display: String,
+}
+
+impl KiroThinkingConfig {
+    /// 与真实客户端一致的 adaptive + summarized 组合。
+    pub fn adaptive_summarized() -> Self {
+        Self {
+            thinking_type: "adaptive".to_string(),
+            display: "summarized".to_string(),
+        }
+    }
 }
 
 /// AWS Q 后端识别的 effort 控制字段。

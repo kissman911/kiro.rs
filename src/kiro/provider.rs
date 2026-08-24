@@ -471,10 +471,26 @@ impl KiroProvider {
                 .header("Connection", "close");
             let request = endpoint.decorate_api(base, &rctx);
 
+            // 可观测性埋点：把「这次请求用了哪张凭据 / 走了哪个代理」写进日志。
+            // 排查间歇性上游静默时，必须能把单条卡死请求关联到具体凭据与出口 IP。
+            tracing::info!(
+                credential_id = ctx.id,
+                credential_name = ctx.credentials.display_name.as_deref().unwrap_or("-"),
+                proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+                model = model.as_deref().unwrap_or("-"),
+                api_type = api_type,
+                attempt = attempt + 1,
+                "派发上游请求"
+            );
+            let dispatch_started = std::time::Instant::now();
+
             let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!(
+                        credential_id = ctx.id,
+                        proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+                        elapsed_ms = dispatch_started.elapsed().as_millis() as u64,
                         "API 请求发送失败（尝试 {}/{}）: {}",
                         attempt + 1,
                         max_retries,
@@ -497,6 +513,12 @@ impl KiroProvider {
 
             // 成功响应
             if status.is_success() {
+                tracing::info!(
+                    credential_id = ctx.id,
+                    proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
+                    headers_ms = dispatch_started.elapsed().as_millis() as u64,
+                    "上游响应头就绪"
+                );
                 self.token_manager.report_success(ctx.id);
                 return Ok(response);
             }
