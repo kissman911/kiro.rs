@@ -850,6 +850,10 @@ pub(crate) async fn build_non_stream_response_from_upstream(
     let mut stop_reason = "end_turn".to_string();
     // 从 contextUsageEvent 计算的实际输入 tokens
     let mut context_input_tokens: Option<i32> = None;
+    // 上游原生 reasoningContentEvent 累积结果（与流式路径同源）。
+    let mut reasoning_text = String::new();
+    let mut reasoning_signature: Option<String> = None;
+    let mut redacted_reasoning = String::new();
 
     // 收集工具调用的增量 JSON
     let mut tool_json_buffers: std::collections::HashMap<String, String> =
@@ -862,6 +866,25 @@ pub(crate) async fn build_non_stream_response_from_upstream(
                     match event {
                         Event::AssistantResponse(resp) => {
                             text_content.push_str(&resp.content);
+                        }
+                        // 原生 reasoning：上行请求体不含任何 stream 标志，decorate_api 也不按
+                        // is_stream 分叉，两条路 URL/content-type 完全相同——上游无法区分流式与
+                        // 非流式，故流式能收到 reasoningContentEvent 时非流式同样会收到。
+                        // 此前这里落入 `_ => {}` 被静默丢弃，thinking 只能靠正文里的
+                        // <thinking> XML 残留，导致非流式拿到的不是真实推理内容。
+                        Event::ReasoningContent(reasoning) => {
+                            if let Some(text) = reasoning.text.as_deref() {
+                                reasoning_text.push_str(text);
+                            }
+                            // signature 用于客户端把 thinking 块写回 history，必须保留。
+                            if let Some(signature) = reasoning.signature.as_deref() {
+                                if !signature.is_empty() {
+                                    reasoning_signature = Some(signature.to_string());
+                                }
+                            }
+                            if let Some(redacted) = reasoning.redacted_content.as_deref() {
+                                redacted_reasoning.push_str(redacted);
+                            }
                         }
                         Event::ToolUse(tool_use) => {
                             has_tool_use = true;
@@ -941,15 +964,30 @@ pub(crate) async fn build_non_stream_response_from_upstream(
     let mut content: Vec<serde_json::Value> = Vec::new();
 
     if thinking_enabled {
-        // 从完整文本中提取 thinking 块
-        let (thinking, remaining_text) =
+        // 正文里可能仍带 prompt 层 <thinking> XML 残留，先剥离以免污染 text 块。
+        let (xml_thinking, remaining_text) =
             super::stream::extract_thinking_from_complete_text(&text_content);
+
+        // 优先用上游原生 reasoning；没有再退回 XML 抽取。
+        let (thinking, signature) = if !reasoning_text.is_empty() {
+            (Some(reasoning_text), reasoning_signature.unwrap_or_default())
+        } else {
+            (xml_thinking, String::new())
+        };
+
+        // redacted_thinking 必须作为独立块下发，且排在 thinking/text 之前。
+        if !redacted_reasoning.is_empty() {
+            content.push(json!({
+                "type": "redacted_thinking",
+                "data": redacted_reasoning
+            }));
+        }
 
         if let Some(thinking_text) = thinking {
             content.push(json!({
                 "type": "thinking",
                 "thinking": thinking_text,
-                "signature": ""
+                "signature": signature
             }));
         }
 
@@ -959,11 +997,19 @@ pub(crate) async fn build_non_stream_response_from_upstream(
                 "text": remaining_text
             }));
         }
-    } else if !text_content.is_empty() {
-        content.push(json!({
-            "type": "text",
-            "text": text_content
-        }));
+    } else {
+        // thinking 未启用：把原生推理降级为普通文本，避免内容凭空消失（与流式路径一致）。
+        let mut merged = String::new();
+        if !reasoning_text.is_empty() {
+            merged.push_str(&reasoning_text);
+        }
+        merged.push_str(&text_content);
+        if !merged.is_empty() {
+            content.push(json!({
+                "type": "text",
+                "text": merged
+            }));
+        }
     }
 
     content.extend(tool_uses);
