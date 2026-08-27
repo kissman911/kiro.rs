@@ -1,6 +1,6 @@
 [package]
 name = "kiro-rs"
-version = "2026.8.2-image-resize"
+version = "2026.8.18-nonstream-reasoning"
 edition = "2024"
 
 [features]

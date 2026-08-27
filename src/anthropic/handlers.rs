@@ -970,10 +970,17 @@ pub(crate) async fn build_non_stream_response_from_upstream(
 
         // 优先用上游原生 reasoning；没有再退回 XML 抽取。
         let (thinking, signature) = if !reasoning_text.is_empty() {
-            (Some(reasoning_text), reasoning_signature.unwrap_or_default())
+            (Some(reasoning_text), reasoning_signature)
         } else {
-            (xml_thinking, String::new())
+            (xml_thinking, None)
         };
+
+        // 实测上游 reasoningContentEvent 只带 text、不带 signature，所以这里必须与流式
+        // 路径同源兜底占位值：Anthropic 客户端把 thinking 块回传时会本地校验 signature
+        // 非空，空串会抛 `content[].thinking must be passed back to the API`。
+        let signature = signature.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+            super::stream::THINKING_SIGNATURE_PLACEHOLDER.to_string()
+        });
 
         // redacted_thinking 必须作为独立块下发，且排在 thinking/text 之前。
         if !redacted_reasoning.is_empty() {
