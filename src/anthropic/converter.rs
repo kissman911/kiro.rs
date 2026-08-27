@@ -552,7 +552,8 @@ fn select_native_reasoning_effort(req: &MessagesRequest, model_id: &str) -> Stri
     normalize_effort_for_model(model_id, &raw).unwrap_or_else(|| "high".to_string())
 }
 
-/// 按模型归一化 effort：不认识的回退 high；xhigh 仅新型号支持，否则降到 high。
+/// 按模型归一化 effort：不认识的回退 high；xhigh 仅新型号支持，否则按模型能力
+/// 降到 max（4.6 系）或 high（更老型号）。
 fn normalize_effort_for_model(model_id: &str, raw_effort: &str) -> Option<String> {
     let trimmed = raw_effort.trim();
     if trimmed.is_empty() {
@@ -572,9 +573,15 @@ fn normalize_effort_for_model(model_id: &str, raw_effort: &str) -> Option<String
         }
     };
 
-    // xhigh 是新档位，老型号会以 `Invalid additionalModelRequestFields` 拒绝，故降到最近的低档。
+    // xhigh 是新档位，老型号会以 `Invalid additionalModelRequestFields` 拒绝，故降到
+    // 该模型实际支持的最高档：4.6 系枚举为 low/medium/high/max → 降 max；
+    // 更老型号无 max 证据 → 降 high。
     let normalized = if requested == EffortTier::XHigh && !model_supports_xhigh_effort(model_id) {
-        EffortTier::High
+        if model_supports_max_effort(model_id) {
+            EffortTier::Max
+        } else {
+            EffortTier::High
+        }
     } else {
         requested
     };
@@ -609,6 +616,24 @@ fn model_supports_xhigh_effort(model_id: &str) -> bool {
             | "claude-opus-4.5"
             | "claude-sonnet-4.5"
             | "claude-haiku-4.5"
+    )
+}
+
+/// 模型是否支持 max effort（在不支持 xhigh 的型号里进一步区分降级目标）。
+///
+/// 依据 kirocc `effort.go`（基于 kiro-cli 2.10.0 `ListAvailableModels` schema）：
+/// Opus 4.6 与 Sonnet 4.6 的 effort 枚举为 `low/medium/high/max`——有 max、无 xhigh。
+/// 故这两个型号收到 xhigh 应降到 max，而不是降到 high。
+///
+/// 实测佐证（2026-08-27，生产 kirors-a）：claude-opus-4.6 + adaptive thinking，
+/// high 档两次采样均为 0 thinking_delta，max 档单次采样 4677 思考字符。
+/// 降 high 等于把用户显式请求的高档打到一个基本不吐思考的档位。
+///
+/// 4.5 系（opus/sonnet/haiku）没有 max 支持证据，保持降 high。
+fn model_supports_max_effort(model_id: &str) -> bool {
+    matches!(
+        model_id.to_ascii_lowercase().as_str(),
+        "claude-opus-4.6" | "claude-sonnet-4.6"
     )
 }
 
@@ -2932,6 +2957,103 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.trim() == "OK"),
             "thinking 模式下也不应出现伪造 OK: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn test_xhigh_downgrades_to_max_for_4_6_family() {
+        // kirocc effort.go / kiro-cli 2.10.0 schema：4.6 系枚举为 low/medium/high/max。
+        // 实测 2026-08-27：4.6 的 high 档不吐思考，max 档正常，故 xhigh 必须降 max 而非 high。
+        for model in ["claude-opus-4.6", "claude-sonnet-4.6"] {
+            assert_eq!(
+                normalize_effort_for_model(model, "xhigh").as_deref(),
+                Some("max"),
+                "{model} 的 xhigh 应降级到 max"
+            );
+        }
+    }
+
+    #[test]
+    fn test_xhigh_downgrades_to_high_for_4_5_family() {
+        // 4.5 系没有 max 支持证据，保持降 high。
+        for model in [
+            "claude-opus-4.5",
+            "claude-sonnet-4.5",
+            "claude-haiku-4.5",
+        ] {
+            assert_eq!(
+                normalize_effort_for_model(model, "xhigh").as_deref(),
+                Some("high"),
+                "{model} 的 xhigh 应降级到 high"
+            );
+        }
+    }
+
+    #[test]
+    fn test_xhigh_preserved_for_capable_models() {
+        for model in [
+            "claude-opus-4.7",
+            "claude-opus-4.8",
+            "claude-opus-5",
+            "claude-sonnet-5",
+        ] {
+            assert_eq!(
+                normalize_effort_for_model(model, "xhigh").as_deref(),
+                Some("xhigh"),
+                "{model} 应原样保留 xhigh"
+            );
+        }
+    }
+
+    #[test]
+    fn test_max_effort_passthrough_unaffected() {
+        // 显式 max 不受降级逻辑影响，所有档位模型都应原样下发。
+        for model in [
+            "claude-opus-4.6",
+            "claude-sonnet-4.6",
+            "claude-opus-4.8",
+            "claude-opus-4.5",
+        ] {
+            assert_eq!(
+                normalize_effort_for_model(model, "max").as_deref(),
+                Some("max"),
+                "{model} 的显式 max 应原样保留"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lower_tiers_unaffected_by_max_downgrade_change() {
+        for effort in ["low", "medium", "high"] {
+            assert_eq!(
+                normalize_effort_for_model("claude-opus-4.6", effort).as_deref(),
+                Some(effort),
+                "低档 {effort} 不应被改写"
+            );
+        }
+    }
+
+    #[test]
+    fn test_4_6_xhigh_end_to_end_emits_max() {
+        // 端到端：4.6 + adaptive thinking + xhigh，实际下发的 wire 字段应是 max。
+        let mut req = base_req(vec![user_msg("分析一下")]);
+        req.model = "claude-opus-4-6".to_string();
+        req.thinking = Some(super::super::types::Thinking {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: 20000,
+        });
+        req.output_config = Some(super::super::types::OutputConfig {
+            effort: "xhigh".to_string(),
+        });
+
+        let result = convert_request(&req).unwrap();
+        let fields = result
+            .additional_model_request_fields
+            .expect("4.6 adaptive 应下发 additionalModelRequestFields");
+        assert_eq!(
+            fields.output_config.expect("应有 output_config").effort,
+            "max",
+            "4.6 收到 xhigh 应降级为 max"
         );
     }
 
