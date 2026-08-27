@@ -18,8 +18,6 @@ pub enum EventType {
     ContextUsage,
     /// 推理内容事件（原生 thinking / reasoning）
     ReasoningContent,
-    /// 元数据事件（上游附带的会话/请求元信息，当前无需消费）
-    Metadata,
     /// 未知事件类型
     Unknown,
 }
@@ -33,7 +31,6 @@ impl EventType {
             "meteringEvent" => Self::Metering,
             "contextUsageEvent" => Self::ContextUsage,
             "reasoningContentEvent" => Self::ReasoningContent,
-            "metadataEvent" => Self::Metadata,
             _ => Self::Unknown,
         }
     }
@@ -46,7 +43,6 @@ impl EventType {
             Self::Metering => "meteringEvent",
             Self::ContextUsage => "contextUsageEvent",
             Self::ReasoningContent => "reasoningContentEvent",
-            Self::Metadata => "metadataEvent",
             Self::Unknown => "unknown",
         }
     }
@@ -81,8 +77,6 @@ pub enum Event {
     ContextUsage(super::ContextUsageEvent),
     /// 推理内容（原生 thinking / reasoning）
     ReasoningContent(super::ReasoningContentEvent),
-    /// 元数据（上游附带的会话/请求元信息，不参与响应构建）
-    Metadata(()),
     /// 未知事件 (保留原始帧数据)
     Unknown {},
     /// 服务端错误
@@ -136,13 +130,6 @@ impl Event {
             EventType::ReasoningContent => {
                 let payload = super::ReasoningContentEvent::from_frame(&frame)?;
                 Ok(Self::ReasoningContent(payload))
-            }
-            // 上游在流式与非流式都会稳定下发 metadataEvent（实测每轮 1-2 次）。
-            // 内容是会话元信息，不参与 Anthropic 响应构建；显式识别以免刷 warn 噪音，
-            // 同时保留 debug 级可观测性。
-            EventType::Metadata => {
-                tracing::debug!("收到 metadataEvent: {} bytes", frame.payload.len());
-                Ok(Self::Metadata(()))
             }
             EventType::Unknown => {
                 // 诊断：抓上游未识别的事件类型，确认上游是否下发新事件。
@@ -199,11 +186,6 @@ mod tests {
             EventType::from_str("contextUsageEvent"),
             EventType::ContextUsage
         );
-        assert_eq!(
-            EventType::from_str("reasoningContentEvent"),
-            EventType::ReasoningContent
-        );
-        assert_eq!(EventType::from_str("metadataEvent"), EventType::Metadata);
         assert_eq!(EventType::from_str("unknown_type"), EventType::Unknown);
     }
 
@@ -214,6 +196,5 @@ mod tests {
             "assistantResponseEvent"
         );
         assert_eq!(EventType::ToolUse.as_str(), "toolUseEvent");
-        assert_eq!(EventType::Metadata.as_str(), "metadataEvent");
     }
 }
