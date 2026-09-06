@@ -34,8 +34,6 @@ config.example.json
 credentials.example.*.json
 
 # Development and test files
-src/test.rs
-src/debug.rs
 test.json
 tools/
 

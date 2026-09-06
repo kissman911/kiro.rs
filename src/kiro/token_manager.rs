@@ -2459,19 +2459,6 @@ impl MultiTokenManager {
         Ok(())
     }
 
-    pub fn get_default_rate_limits(&self) -> Option<Vec<RateLimitRule>> {
-        self.config().default_rate_limits.clone()
-    }
-
-    pub fn set_default_rate_limits(
-        &self,
-        rate_limits: Option<Vec<RateLimitRule>>,
-    ) -> anyhow::Result<()> {
-        let _normalized =
-            Self::normalize_optional_rate_limits(rate_limits, "config.defaultRateLimits")?;
-        anyhow::bail!("当前运行时不支持热更新全局默认限流，请修改 config.json 后重启")
-    }
-
     /// 重置凭据失败计数并重新启用（Admin API）
     pub fn reset_and_enable(&self, id: u64) -> anyhow::Result<()> {
         {

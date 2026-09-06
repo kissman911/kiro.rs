@@ -9,9 +9,8 @@ use crate::token;
 use anyhow::Error;
 use axum::{
     Json as JsonExtractor,
-    body::Body,
     extract::State,
-    http::{StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
@@ -543,41 +542,6 @@ pub async fn post_messages(
     }
 }
 
-/// 处理流式请求
-async fn handle_stream_request(
-    provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
-    request_body: &str,
-    model: &str,
-    input_tokens: i32,
-    thinking_enabled: bool,
-    tool_name_map: std::collections::HashMap<String, String>,
-) -> Response {
-    // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error(e),
-    };
-
-    // 创建流处理上下文
-    let mut ctx =
-        StreamContext::new_with_thinking(model, input_tokens, thinking_enabled, tool_name_map);
-
-    // 生成初始事件
-    let initial_events = ctx.generate_initial_events();
-
-    // 创建 SSE 流
-    let stream = create_sse_stream(response, ctx, initial_events);
-
-    // 返回 SSE 响应
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
-        .body(Body::from_stream(stream))
-        .unwrap()
-}
-
 /// Ping 事件间隔（25秒）
 const PING_INTERVAL_SECS: u64 = 25;
 
@@ -992,30 +956,6 @@ pub(crate) async fn build_non_stream_response_from_upstream(
     (StatusCode::OK, Json(response_body)).into_response()
 }
 
-/// 处理非流式请求
-pub(crate) async fn handle_non_stream_request(
-    provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
-    request_body: &str,
-    model: &str,
-    input_tokens: i32,
-    thinking_enabled: bool,
-    tool_name_map: std::collections::HashMap<String, String>,
-) -> Response {
-    let response = match provider.call_api(request_body).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error(e),
-    };
-
-    build_non_stream_response_from_upstream(
-        response,
-        model,
-        input_tokens,
-        thinking_enabled,
-        tool_name_map,
-    )
-    .await
-}
-
 fn model_uses_default_thinking(model: &str) -> bool {
     let model_lower = model.to_lowercase();
     model_lower.contains("opus-5")
@@ -1276,45 +1216,6 @@ pub async fn post_messages_cc(
                 .await
         }
     }
-}
-
-/// 处理流式请求（缓冲版本）
-///
-/// 与 `handle_stream_request` 不同，此函数会缓冲所有事件直到流结束，
-/// 然后用从 contextUsageEvent 计算的正确 input_tokens 生成 message_start 事件。
-async fn handle_stream_request_buffered(
-    provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
-    request_body: &str,
-    model: &str,
-    estimated_input_tokens: i32,
-    thinking_enabled: bool,
-    tool_name_map: std::collections::HashMap<String, String>,
-) -> Response {
-    // 调用 Kiro API（支持多凭据故障转移）
-    let response = match provider.call_api_stream(request_body).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error(e),
-    };
-
-    // 创建缓冲流处理上下文
-    let ctx = BufferedStreamContext::new(
-        model,
-        estimated_input_tokens,
-        thinking_enabled,
-        tool_name_map,
-    );
-
-    // 创建缓冲 SSE 流
-    let stream = create_buffered_sse_stream(response, ctx);
-
-    // 返回 SSE 响应
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
-        .body(Body::from_stream(stream))
-        .unwrap()
 }
 
 /// 创建缓冲 SSE 事件流

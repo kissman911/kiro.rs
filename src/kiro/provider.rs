@@ -2,7 +2,7 @@
 //!
 //! 核心组件，负责与 Kiro API 通信
 //! 支持流式和非流式请求
-//! 支持多凭据故障转移和重试
+//! 聊天请求使用调用方获取的固定凭据（单次请求内不切换）；MCP 请求支持多凭据故障转移和重试
 //! 支持按凭据级 endpoint 切换不同 Kiro API 端点
 
 use reqwest::Client;
@@ -35,7 +35,7 @@ const DEFAULT_SUSPICIOUS_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(10 
 /// Kiro API Provider
 ///
 /// 核心组件，负责与 Kiro API 通信
-/// 支持多凭据故障转移和重试机制
+/// 聊天请求使用固定凭据上下文；MCP 请求带多凭据故障转移和重试机制
 /// 按凭据 `endpoint` 字段选择 [`KiroEndpoint`] 实现
 pub struct KiroProvider {
     token_manager: Arc<MultiTokenManager>,
@@ -147,60 +147,6 @@ impl KiroProvider {
     ) -> anyhow::Result<reqwest::Response> {
         self.call_api_once_with_context(ctx, request_body, true)
             .await
-    }
-
-    /// 发送 MCP API 请求（复用已获取的调用上下文）
-    pub async fn call_mcp_with_context(
-        &self,
-        ctx: &crate::kiro::token_manager::CallContext,
-        request_body: &str,
-    ) -> anyhow::Result<reqwest::Response> {
-        let config = self.token_manager.config();
-        let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
-        let endpoint = self.endpoint_for(&ctx.credentials)?;
-        let rctx = RequestContext {
-            credentials: &ctx.credentials,
-            token: &ctx.token,
-            machine_id: &machine_id,
-            config,
-        };
-
-        let url = endpoint.mcp_url(&rctx);
-        let body = endpoint.transform_mcp_body(request_body, &rctx);
-        let base = self
-            .client_for(&ctx.credentials)?
-            .post(&url)
-            .body(body)
-            .header("content-type", "application/json")
-            .header("Connection", "close");
-        let response = endpoint.decorate_mcp(base, &rctx).send().await?;
-
-        if response.status().is_success() {
-            self.token_manager.report_success(ctx.id);
-            return Ok(response);
-        }
-
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
-            self.token_manager.report_quota_exhausted(ctx.id);
-        } else if matches!(status.as_u16(), 401 | 403) {
-            self.token_manager
-                .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
-        }
-        anyhow::bail!("MCP 请求失败: {} {}", status, body);
-    }
-
-    /// 发送非流式 API 请求
-    ///
-    /// 支持多凭据故障转移（见 [`Self::call_api_with_retry`]）
-    pub async fn call_api(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_api_with_retry(request_body, false).await
-    }
-
-    /// 发送流式 API 请求
-    pub async fn call_api_stream(&self, request_body: &str) -> anyhow::Result<reqwest::Response> {
-        self.call_api_with_retry(request_body, true).await
     }
 
     /// 发送 MCP API 请求（WebSearch 等工具调用）
@@ -408,298 +354,6 @@ impl KiroProvider {
         }))
     }
 
-    /// 内部方法：带重试逻辑的 API 调用
-    ///
-    /// 重试策略：
-    /// - 每个凭据最多重试 MAX_RETRIES_PER_CREDENTIAL 次
-    /// - 总重试次数 = min(凭据数量 × 每凭据重试次数, MAX_TOTAL_RETRIES)
-    /// - 硬上限 9 次，避免无限重试
-    async fn call_api_with_retry(
-        &self,
-        request_body: &str,
-        is_stream: bool,
-    ) -> anyhow::Result<reqwest::Response> {
-        let total_credentials = self.token_manager.total_count();
-        let max_retries = (total_credentials * MAX_RETRIES_PER_CREDENTIAL).min(MAX_TOTAL_RETRIES);
-        let mut last_error: Option<anyhow::Error> = None;
-        let mut force_refreshed: HashSet<u64> = HashSet::new();
-        let api_type = if is_stream { "流式" } else { "非流式" };
-
-        // 尝试从请求体中提取模型信息
-        let model = Self::extract_model_from_request(request_body);
-
-        for attempt in 0..max_retries {
-            // 获取调用上下文（绑定 index、credentials、token）
-            let ctx = match self.token_manager.acquire_context(model.as_deref()).await {
-                Ok(c) => c,
-                Err(e) => {
-                    last_error = Some(e);
-                    continue;
-                }
-            };
-
-            let config = self.token_manager.config();
-            let machine_id = machine_id::generate_from_credentials(&ctx.credentials, config);
-
-            let endpoint = match self.endpoint_for(&ctx.credentials) {
-                Ok(e) => e,
-                Err(e) => {
-                    let error_message = e.to_string();
-                    last_error = Some(e);
-                    self.token_manager
-                        .report_failure(ctx.id, None, Some(&error_message));
-                    continue;
-                }
-            };
-
-            let rctx = RequestContext {
-                credentials: &ctx.credentials,
-                token: &ctx.token,
-                machine_id: &machine_id,
-                config,
-            };
-
-            let url = endpoint.api_url(&rctx);
-            let body = endpoint.transform_api_body(request_body, &rctx);
-            let content_type = endpoint.content_type();
-
-            let base = self
-                .client_for(&ctx.credentials)?
-                .post(&url)
-                .body(body)
-                .header("content-type", content_type)
-                .header("Connection", "close");
-            let request = endpoint.decorate_api(base, &rctx);
-
-            // 可观测性埋点：把「这次请求用了哪张凭据 / 走了哪个代理」写进日志。
-            // 排查间歇性上游静默时，必须能把单条卡死请求关联到具体凭据与出口 IP。
-            tracing::info!(
-                credential_id = ctx.id,
-                credential_name = ctx.credentials.display_name.as_deref().unwrap_or("-"),
-                proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
-                model = model.as_deref().unwrap_or("-"),
-                api_type = api_type,
-                attempt = attempt + 1,
-                "派发上游请求"
-            );
-            let dispatch_started = std::time::Instant::now();
-
-            let response = match request.send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    tracing::warn!(
-                        credential_id = ctx.id,
-                        proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
-                        elapsed_ms = dispatch_started.elapsed().as_millis() as u64,
-                        "API 请求发送失败（尝试 {}/{}）: {}",
-                        attempt + 1,
-                        max_retries,
-                        e
-                    );
-                    // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
-                    // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
-                    let error_message = e.to_string();
-                    self.token_manager
-                        .report_transient_error(ctx.id, None, Some(&error_message));
-                    last_error = Some(e.into());
-                    if attempt + 1 < max_retries {
-                        sleep(Self::retry_delay(attempt)).await;
-                    }
-                    continue;
-                }
-            };
-
-            let status = response.status();
-
-            // 成功响应
-            if status.is_success() {
-                tracing::info!(
-                    credential_id = ctx.id,
-                    proxy = ctx.credentials.proxy_url.as_deref().unwrap_or("direct"),
-                    headers_ms = dispatch_started.elapsed().as_millis() as u64,
-                    "上游响应头就绪"
-                );
-                self.token_manager.report_success(ctx.id);
-                return Ok(response);
-            }
-
-            // 失败响应：读取 body 用于日志/错误信息
-            let body = response.text().await.unwrap_or_default();
-
-            // 402 Payment Required 且额度用尽：禁用凭据并故障转移
-            if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
-                tracing::warn!(
-                    "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-
-                let has_available = self.token_manager.report_quota_exhausted(ctx.id);
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据已用尽）: {} {}",
-                        api_type,
-                        status,
-                        body
-                    );
-                }
-
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                continue;
-            }
-
-            // 400 Bad Request - 请求问题，重试/切换凭据无意义
-            if status.as_u16() == 400 {
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
-            }
-
-            // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
-            if matches!(status.as_u16(), 401 | 403) {
-                tracing::warn!(
-                    "API 请求失败（可能为凭据错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-
-                // token 被上游失效：先尝试 force-refresh，每凭据仅一次机会
-                if endpoint.is_bearer_token_invalid(&body) && !force_refreshed.contains(&ctx.id) {
-                    force_refreshed.insert(ctx.id);
-                    tracing::info!("凭据 #{} token 疑似被上游失效，尝试强制刷新", ctx.id);
-                    if self
-                        .token_manager
-                        .force_refresh_token_for(ctx.id)
-                        .await
-                        .is_ok()
-                    {
-                        tracing::info!("凭据 #{} token 强制刷新成功，重试请求", ctx.id);
-                        continue;
-                    }
-                    tracing::warn!("凭据 #{} token 强制刷新失败，计入失败", ctx.id);
-                }
-
-                let has_available =
-                    self.token_manager
-                        .report_failure(ctx.id, Some(status.as_u16()), Some(&body));
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据已用尽）: {} {}",
-                        api_type,
-                        status,
-                        body
-                    );
-                }
-
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                continue;
-            }
-
-            // Kiro suspicious activity 429：账号级临时风控，冷却当前凭据并切换，避免继续重试扩大风控
-            if Self::is_suspicious_activity_rate_limit(status, &body) {
-                tracing::warn!(
-                    "API 请求失败（Kiro suspicious activity 429，冷却凭据并切换，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-                let has_available = self.token_manager.report_suspicious_rate_limited(
-                    ctx.id,
-                    self.suspicious_rate_limit_cooldown(),
-                    Some(status.as_u16()),
-                    Some(&body),
-                );
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据均在风控冷却或已禁用）: {} {}",
-                        api_type,
-                        status,
-                        body
-                    );
-                }
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                continue;
-            }
-
-            // 429/408/5xx - 瞬态上游错误：重试但不禁用或切换凭据
-            // （避免 429 high traffic / 502 high load 等瞬态错误把所有凭据锁死）
-            if matches!(status.as_u16(), 408 | 429) || status.is_server_error() {
-                tracing::warn!(
-                    "API 请求失败（上游瞬态错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-                last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
-                    api_type,
-                    status,
-                    body
-                ));
-                self.token_manager.report_transient_error(
-                    ctx.id,
-                    Some(status.as_u16()),
-                    Some(&body),
-                );
-                if attempt + 1 < max_retries {
-                    sleep(Self::retry_delay(attempt)).await;
-                }
-                continue;
-            }
-
-            // 其他 4xx - 通常为请求/配置问题：直接返回，不计入凭据失败
-            if status.is_client_error() {
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
-            }
-
-            // 兜底：当作可重试的瞬态错误处理（不切换凭据）
-            tracing::warn!(
-                "API 请求失败（未知错误，尝试 {}/{}）: {} {}",
-                attempt + 1,
-                max_retries,
-                status,
-                body
-            );
-            last_error = Some(anyhow::anyhow!(
-                "{} API 请求失败: {} {}",
-                api_type,
-                status,
-                body
-            ));
-            if attempt + 1 < max_retries {
-                sleep(Self::retry_delay(attempt)).await;
-            }
-        }
-
-        // 所有重试都失败
-        Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!(
-                "{} API 请求失败：已达到最大重试次数（{}次）",
-                api_type,
-                max_retries
-            )
-        }))
-    }
-
     /// 使用固定上下文发送单次 API 请求（无凭据切换）
     async fn call_api_once_with_context(
         &self,
@@ -727,9 +381,9 @@ impl KiroProvider {
             .header("content-type", content_type)
             .header("Connection", "close");
 
-        // 可观测性埋点：流式请求走的是这条固定凭据路径（executor →
-        // call_api_stream_with_context → 本函数），而不是带重试的
-        // call_api_with_retry。排查间歇性上游静默时，必须能把单条卡死请求
+        // 可观测性埋点：聊天请求走的是这条固定凭据路径（executor →
+        // call_api_stream_with_context → 本函数），单次请求内不切换凭据。
+        // 排查间歇性上游静默时，必须能把单条卡死请求
         // 关联到具体凭据与出口 IP，否则无法区分「某张凭据坏」与「上游随机故障」。
         let model = Self::extract_model_from_request(request_body);
         let api_type_label = if is_stream { "流式" } else { "非流式" };
